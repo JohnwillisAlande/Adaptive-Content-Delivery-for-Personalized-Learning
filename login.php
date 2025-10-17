@@ -19,8 +19,11 @@ if(isset($_POST['submit'])){
    $row = $select_user->fetch(PDO::FETCH_ASSOC);
 
    if($row && password_verify($pass, $row['password'])){
-     setcookie('user_id', $row['id'], time() + 60*60*24*30, '/');
-     header('location:home.php');
+     // 2FA step: store user id in session and redirect to 2FA page
+     session_start();
+     $_SESSION['pending_2fa_user'] = $row['id'];
+     header('Location: 2fa.php');
+     exit;
    }else{
       $message[] = 'Incorrect email or password!';
    }
