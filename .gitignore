@@ -1,0 +1,33 @@
+# Dependency Directories
+node_modules/
+/backend/node_modules
+/server/node_modules
+
+# Build/Dist Folders
+/build
+/dist
+/out
+/client/build
+/client/dist
+
+# Environment Variables (CRITICAL)
+.env
+.env.local
+.env.*.local
+
+# Specific paths for backend and frontend .env files
+/backend/.env
+/frontend/.env
+
+# Logs
+*.log
+npm-debug.log
+yarn-error.log
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# IDE/Editor Configuration
+.idea/
+.vscode/
