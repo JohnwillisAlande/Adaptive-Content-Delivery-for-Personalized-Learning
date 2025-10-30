@@ -1,26 +1,30 @@
 import React, { useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { jwtDecode } from "jwt-decode";
+import { toast } from 'react-toastify';
+import { useAuth } from './context/AuthContext';
 
 function AuthCallback() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { login } = useAuth();
 
   useEffect(() => {
     const token = searchParams.get('token');
-    const userStr = searchParams.get('user');
-    if (token && userStr) {
-      localStorage.setItem('token', token);
-      const user = JSON.parse(decodeURIComponent(userStr));
-      localStorage.setItem('user', JSON.stringify(user));  // Optional: Store user too
-      const decoded = jwtDecode(token);
-      console.log('Decoded JWT from GitHub callback:', decoded);
-      navigate('/home');
+    if (token) {
+      (async () => {
+        try {
+          await login(token);
+          navigate('/home');
+        } catch (err) {
+          toast.error('Authentication failed. Please login again.');
+          navigate('/login');
+        }
+      })();
     } else {
-      console.error('No token in callback');
+      toast.error('Authentication token not provided.');
       navigate('/login');
     }
-  }, [searchParams, navigate]);
+  }, [searchParams, navigate, login]);
 
   return <div>Authenticating... Redirecting to home.</div>;  // Loading spinner
 }

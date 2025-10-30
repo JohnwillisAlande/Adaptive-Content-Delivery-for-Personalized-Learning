@@ -1,7 +1,95 @@
 const express = require('express');
 const router = express.Router();
-const { Content, Playlist, User } = require('./models');
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const mongoose = require('mongoose');
+// --- FIXED: Import all models, including the new User types ---
+const { Content, Playlist, Student, Teacher, Admin, Course, Interaction } = require('./models');
 const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'apex101_secret';
+
+const uploadDir = path.join(__dirname, '../uploaded_files');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
+const storage = multer.diskStorage({
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+  }
+});
+const upload = multer({ storage });
+const materialUpload = upload.fields([
+  { name: 'thumb', maxCount: 1 },
+  { name: 'videoFile', maxCount: 1 },
+  { name: 'contentFile', maxCount: 1 }
+]);
+
+const generateCourseId = (title = '') => {
+  const slug = title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || `course-${Date.now()}`;
+};
+
+const ensureUniqueCourseId = async (slug) => {
+  let unique = slug;
+  let counter = 1;
+  // Ensure slug uniqueness
+  // eslint-disable-next-line no-await-in-loop
+  while (await Course.exists({ id: unique })) {
+    unique = `${slug}-${counter++}`;
+  }
+  return unique;
+};
+
+const toNumber = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const num = Number(value);
+  return Number.isNaN(num) ? fallback : num;
+};
+
+const toBoolean = (value, fallback = false) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    return ['true', '1', 'yes', 'on'].includes(value.toLowerCase());
+  }
+  return fallback;
+};
+
+const getRequestContext = async (req) => {
+  if (!req.headers.authorization) return {};
+  try {
+    const token = req.headers.authorization.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await findUserById(decoded.id);
+    return { decoded, user };
+  } catch (err) {
+    console.warn('Auth decode failed:', err.message);
+    return {};
+  }
+};
+
+// --- ADDED: Helper function to find a user across multiple collections ---
+// Since you have Student, Teacher, and Admin models, we need to check all of them.
+const findUserById = async (id) => {
+  try {
+    let user = await Student.findById(id);
+    if (user) return user;
+    user = await Teacher.findById(id);
+    if (user) return user;
+    user = await Admin.findById(id);
+    return user; // will be null if not found in any
+  } catch (err) {
+    console.error("Error finding user by ID:", err.message);
+    return null;
+  }
+};
+
 
 // Hardcoded fallback courses
 const COURSE_LIST = [
@@ -56,53 +144,1175 @@ const COURSE_LIST = [
   },
 ];
 
-// GET /api/courses - List all courses
+const BASE_COURSE_MAP = new Map(COURSE_LIST.map(course => [course.id, course]));
+
+const buildCourseSummary = (courseId, storedCourse) => {
+  const base = BASE_COURSE_MAP.get(courseId) || {};
+  const source = storedCourse || base;
+  return {
+    id: storedCourse?.id || courseId || base.id,
+    _id: storedCourse?._id || null,
+    title: source.title || source.name || base.title || base.name || '',
+    name: source.title || source.name || base.title || base.name || '',
+    description: source.description || base.description || '',
+    subtitle: source.subtitle || base.subtitle || '',
+    backgroundImage: source.backgroundImage || base.backgroundImage || '',
+    thumb: source.thumb || base.thumb || '',
+    lessons: source.lessons ?? base.lessons ?? 0,
+    duration: source.duration || base.duration || '',
+    students: source.students ?? base.students ?? 0,
+    featured: source.featured ?? base.featured ?? false
+  };
+};
+
+const resolveCoursePlaylistKeys = (course, fallbackId = null) => {
+  const keys = new Set();
+  if (fallbackId) keys.add(fallbackId.toString());
+  if (course?.id) keys.add(course.id.toString());
+  if (course?.playlistId) keys.add(course.playlistId.toString());
+  return Array.from(keys).filter(Boolean);
+};
+
+const collectPlaylistKeysWithPlaylists = (course, fallbackId, playlists = []) => {
+  const keys = new Set(resolveCoursePlaylistKeys(course, fallbackId));
+  (playlists || []).forEach((playlist) => {
+    if (playlist?.id) keys.add(playlist.id.toString());
+    if (playlist?._id) keys.add(playlist._id.toString());
+  });
+  return Array.from(keys).filter(Boolean);
+};
+
+const computeCourseProgress = async (courseId, userId, options = {}) => {
+  const {
+    playlistIds = [courseId],
+    totalMaterialsOverride = null
+  } = options;
+
+  const filter = { playlist_id: { $in: Array.from(new Set(playlistIds.map(String).filter(Boolean))) } };
+
+  const [totalMaterials, completedIds] = await Promise.all([
+    totalMaterialsOverride !== null
+      ? Promise.resolve(totalMaterialsOverride)
+      : Content.countDocuments(filter),
+    userId
+      ? Interaction.distinct('content_id', {
+          ...filter,
+          user_id: userId,
+          $or: [
+            { completed: { $exists: false } },
+            { completed: true }
+          ]
+        })
+      : Promise.resolve([])
+  ]);
+
+  const completedCount = Array.isArray(completedIds) ? completedIds.length : 0;
+  const percent = totalMaterials > 0
+    ? Math.min(100, Math.round((completedCount / totalMaterials) * 100))
+    : 0;
+
+  return {
+    percent,
+    totalMaterials,
+    completedCount,
+    completedIds: new Set(completedIds)
+  };
+};
+
+// GET /api/courses - List all courses (merged with database overrides)
 router.get('/', async (req, res) => {
   try {
-    // If you have a Course model, fetch from DB, else fallback
-    // const courses = await Course.find();
-    res.json(COURSE_LIST);
+    const [{ user }, storedCourses] = await Promise.all([
+      getRequestContext(req),
+      Course.find().lean()
+    ]);
+
+    const storedById = new Map(storedCourses.map(course => [course.id, course]));
+    const enrolledSet = new Set(
+      Array.isArray(user?.enrolledCourses) ? user.enrolledCourses : []
+    );
+
+    const mergedCourses = COURSE_LIST.map(baseCourse => {
+      const override = storedById.get(baseCourse.id);
+      if (override) storedById.delete(baseCourse.id);
+      const summary = buildCourseSummary(baseCourse.id, override);
+      return {
+        ...summary,
+        isEnrolled: enrolledSet.has(summary.id)
+      };
+    });
+
+    const additionalCourses = Array.from(storedById.values()).map(course => {
+      const summary = buildCourseSummary(course.id, course);
+      return {
+        ...summary,
+        isEnrolled: enrolledSet.has(summary.id)
+      };
+    });
+
+    res.json([...mergedCourses, ...additionalCourses]);
   } catch (err) {
+    console.error('Courses fetch error:', err);
     res.status(500).json({ error: 'Failed to fetch courses' });
   }
 });
 
-// GET /api/courses/:courseId - Get course materials
+// GET /api/courses/student/my - Courses a student is enrolled in with progress
+router.get('/student/my', async (req, res) => {
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!Array.isArray(user.enrolledCourses) || !user.enrolledCourses.length) {
+      return res.json([]);
+    }
+
+    const enrolledIds = user.enrolledCourses.filter(Boolean);
+    const storedCourses = await Course.find({ id: { $in: enrolledIds } }).lean();
+    const storedById = new Map(storedCourses.map(course => [course.id, course]));
+
+    const progressPairs = await Promise.all(
+      enrolledIds.map(async (courseId) => {
+        const storedCourse = storedById.get(courseId);
+        const playlistKeys = resolveCoursePlaylistKeys(storedCourse, courseId);
+        const progress = await computeCourseProgress(courseId, user._id.toString(), {
+          playlistIds: playlistKeys
+        });
+        return [courseId, progress];
+      })
+    );
+    const progressMap = new Map(progressPairs);
+
+    const response = enrolledIds.map(courseId => {
+      const summary = buildCourseSummary(courseId, storedById.get(courseId));
+      const progress = progressMap.get(courseId) || {
+        percent: 0,
+        totalMaterials: summary.lessons || 0,
+        completedCount: 0
+      };
+
+      return {
+        ...summary,
+        isEnrolled: true,
+        progressPercent: progress.percent,
+        totalMaterials: progress.totalMaterials,
+        completedMaterials: progress.completedCount
+      };
+    });
+
+    res.json(response);
+  } catch (err) {
+    console.error('Student courses fetch error:', err);
+    res.status(500).json({ error: 'Failed to load enrolled courses' });
+  }
+});
+
+const deleteFileIfExists = async (filename) => {
+  if (!filename) return;
+  const targetPath = path.join(uploadDir, filename);
+  try {
+    await fs.promises.unlink(targetPath);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn(`Failed to delete file ${filename}:`, err.message);
+    }
+  }
+};
+
+const isLocalAsset = (value) => Boolean(value && !value.startsWith('http'));
+const toPublicPath = (value) => {
+  if (!value) return '';
+  return value.startsWith('http') ? value : `/uploaded_files/${value}`;
+};
+
+const formatMaterial = (doc) => ({
+  _id: doc._id,
+  id: doc.id,
+  title: doc.title,
+  description: doc.description,
+  video: doc.video,
+  videoUrl: toPublicPath(doc.video),
+  thumb: doc.thumb,
+  thumbUrl: toPublicPath(doc.thumb),
+  order: doc.order,
+  annotations: doc.annotations,
+  textContent: doc.textContent,
+  fileUrl: toPublicPath(doc.fileUrl),
+  quizData: doc.quizData,
+  playlist_id: doc.playlist_id,
+  tutor_id: doc.tutor_id
+});
+
+const formatCourseForTeacher = (course, options = {}) => {
+  const {
+    materials = [],
+    materialCount = materials.length
+  } = options;
+
+  return {
+    _id: course._id,
+    id: course.id,
+    title: course.title,
+    description: course.description,
+    subtitle: course.subtitle,
+    backgroundImage: course.backgroundImage,
+    thumb: course.thumb,
+    thumbUrl: toPublicPath(course.thumb),
+    lessons: course.lessons,
+    duration: course.duration,
+    students: course.students,
+    featured: course.featured,
+    playlistId: course.playlistId,
+    materialCount,
+    materials: materials.map(formatMaterial)
+  };
+};
+
+const FORMAT_OPTIONS = ['Visual', 'Verbal', 'Audio'];
+const TYPE_OPTIONS = ['Abstract', 'Concrete'];
+const CATEGORY_OPTIONS = ['Video', 'Example', 'Exercise', 'Quiz', 'Reading', 'Outline', 'Concept Map', 'Audio', 'Flashcards', 'PDF'];
+
+const getTeacherContext = async (req, res) => {
+  const ctx = await getRequestContext(req);
+  if (!ctx.user || ctx.decoded?.userType !== 'Teacher') {
+    res.status(403).json({ error: 'Teachers only' });
+    return null;
+  }
+  return ctx;
+};
+
+const loadCourseMaterials = async (course) => {
+  const playlistKeys = resolveCoursePlaylistKeys(course);
+  if (!playlistKeys.length) return [];
+  return Content.find({ playlist_id: { $in: playlistKeys } })
+    .sort({ order: 1, createdAt: 1 })
+    .lean();
+};
+
+const syncTeacherCourseReference = async (teacherDoc, courseId) => {
+  if (!teacherDoc) return;
+  if (!Array.isArray(teacherDoc.coursesTaught)) {
+    teacherDoc.coursesTaught = [];
+  }
+  const idString = courseId.toString();
+  if (!teacherDoc.coursesTaught.includes(idString)) {
+    teacherDoc.coursesTaught.push(idString);
+    await teacherDoc.save();
+  }
+};
+
+// --- Teacher course management routes ---
+router.get('/teacher/my', async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  try {
+    const courses = await Course.find({ teacherId: ctx.user._id })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const payload = await Promise.all(
+      courses.map(async (course) => {
+        const materials = await loadCourseMaterials(course);
+        return formatCourseForTeacher(course, { materials });
+      })
+    );
+
+    res.json(payload);
+  } catch (err) {
+    console.error('Teacher courses fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch courses' });
+  }
+});
+
+router.post('/teacher', upload.single('thumb'), async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) {
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    return;
+  }
+  const { title, description, subtitle = '', backgroundImage = '', duration = '', lessons, featured } = req.body;
+  if (!title || !description) {
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    return res.status(400).json({ error: 'Title and description are required' });
+  }
+  try {
+    const baseSlug = generateCourseId(title);
+    const slug = await ensureUniqueCourseId(baseSlug);
+    const thumbFile = req.file ? req.file.filename : '';
+
+    const playlist = new Playlist({
+      title,
+      description,
+      thumb: thumbFile,
+      tutor_id: ctx.user._id,
+      status: 'active',
+      id: slug
+    });
+    await playlist.save();
+
+    const course = new Course({
+      id: slug,
+      title,
+      description,
+      subtitle,
+      backgroundImage,
+      thumb: thumbFile,
+      lessons: toNumber(lessons, 0),
+      duration,
+      students: 0,
+      featured: toBoolean(featured, false),
+      teacherId: ctx.user._id,
+      playlistId: playlist._id
+    });
+    await course.save();
+    await syncTeacherCourseReference(ctx.user, course._id);
+
+    res.status(201).json(formatCourseForTeacher(course, { materials: [] }));
+  } catch (err) {
+    console.error('Teacher course creation error:', err);
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    res.status(500).json({ error: 'Failed to create course' });
+  }
+});
+
+router.put('/teacher/:courseId', upload.single('thumb'), async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) {
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    return;
+  }
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      if (req.file) await deleteFileIfExists(req.file.filename);
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const playlist = course.playlistId ? await Playlist.findById(course.playlistId) : null;
+    const {
+      title,
+      description,
+      subtitle,
+      backgroundImage,
+      duration,
+      lessons,
+      featured
+    } = req.body;
+
+    if (title) {
+      course.title = title;
+      if (playlist) playlist.title = title;
+    }
+    if (description) {
+      course.description = description;
+      if (playlist) playlist.description = description;
+    }
+    if (subtitle !== undefined) course.subtitle = subtitle;
+    if (backgroundImage !== undefined) course.backgroundImage = backgroundImage;
+    if (duration !== undefined) course.duration = duration;
+    if (lessons !== undefined) course.lessons = toNumber(lessons, course.lessons);
+    if (featured !== undefined) course.featured = toBoolean(featured, course.featured);
+
+    if (req.file) {
+      if (isLocalAsset(course.thumb)) await deleteFileIfExists(course.thumb);
+      course.thumb = req.file.filename;
+      if (playlist) playlist.thumb = req.file.filename;
+    }
+
+    if (playlist) await playlist.save();
+    await course.save();
+    const materials = await loadCourseMaterials(course);
+    res.json(formatCourseForTeacher(course, { materials }));
+  } catch (err) {
+    console.error('Teacher course update error:', err);
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    res.status(500).json({ error: 'Failed to update course' });
+  }
+});
+
+router.get('/teacher/:courseId/materials', async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  try {
+    const course = await Course.findById(req.params.courseId).lean();
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    const materials = await loadCourseMaterials(course);
+    res.json(materials.map(formatMaterial));
+  } catch (err) {
+    console.error('Teacher materials fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch materials' });
+  }
+});
+
+router.get('/teacher/materials/:materialId', async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  try {
+    const material = await Content.findById(req.params.materialId).lean();
+    if (!material) return res.status(404).json({ error: 'Material not found' });
+    const query = [{ id: material.playlist_id }];
+    if (mongoose.Types.ObjectId.isValid(material.playlist_id)) {
+      query.push({ playlistId: material.playlist_id });
+    }
+    const course = await Course.findOne({ $or: query }).lean();
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      return res.status(404).json({ error: 'Material not found' });
+    }
+    res.json({
+      ...formatMaterial(material),
+      courseId: course._id
+    });
+  } catch (err) {
+    console.error('Teacher material fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch material' });
+  }
+});
+
+router.post('/teacher/:courseId/materials', materialUpload, async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  const files = req.files || {};
+  const thumbFile = files.thumb?.[0];
+  const videoFile = files.videoFile?.[0];
+  const {
+    title,
+    description,
+    order,
+    format,
+    type,
+    category,
+    videoUrl
+  } = req.body;
+
+  if (!title || !description) {
+    if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+    if (videoFile) await deleteFileIfExists(videoFile.filename);
+    return res.status(400).json({ error: 'Title and description are required' });
+  }
+  if (!FORMAT_OPTIONS.includes(format)) {
+    return res.status(400).json({ error: 'Invalid primary format selection' });
+  }
+  if (!TYPE_OPTIONS.includes(type)) {
+    return res.status(400).json({ error: 'Invalid content type selection' });
+  }
+  if (!CATEGORY_OPTIONS.includes(category)) {
+    return res.status(400).json({ error: 'Invalid content category selection' });
+  }
+
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+      if (videoFile) await deleteFileIfExists(videoFile.filename);
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const playlistKey = course.id || course.playlistId?.toString();
+    if (!playlistKey) {
+      return res.status(400).json({ error: 'Course is missing playlist reference' });
+    }
+
+    if (!thumbFile) {
+      return res.status(400).json({ error: 'Thumbnail image is required' });
+    }
+
+    const numericOrder = parseInt(order, 10);
+    if (Number.isNaN(numericOrder) || numericOrder < 1) {
+      await deleteFileIfExists(thumbFile.filename);
+      if (videoFile) await deleteFileIfExists(videoFile.filename);
+      if (files.contentFile?.[0]) await deleteFileIfExists(files.contentFile[0].filename);
+      return res.status(400).json({ error: 'Lesson number must be a whole number starting at 1' });
+    }
+
+    const requiresVideo = ['Video', 'Example'].includes(category);
+    const requiresFile = ['Reading', 'Exercise', 'Concept Map', 'Audio', 'Flashcards', 'PDF', 'Outline'].includes(category);
+    const allowsTextFallback = ['Reading', 'Exercise', 'Flashcards', 'Outline'].includes(category);
+    const isQuizCategory = category === 'Quiz';
+    const trimmedText = req.body.textContent && req.body.textContent.trim()
+      ? req.body.textContent.trim()
+      : undefined;
+
+    let resolvedVideo = null;
+    if (requiresVideo) {
+      if (videoFile) {
+        resolvedVideo = videoFile.filename;
+      } else if (videoUrl && videoUrl.trim()) {
+        resolvedVideo = videoUrl.trim();
+      } else {
+        await deleteFileIfExists(thumbFile.filename);
+        if (files.contentFile?.[0]) await deleteFileIfExists(files.contentFile[0].filename);
+        return res.status(400).json({ error: 'Provide a video file or URL for this content type' });
+      }
+    } else if (videoFile || (videoUrl && videoUrl.trim())) {
+      resolvedVideo = videoFile ? videoFile.filename : videoUrl.trim();
+    }
+
+    const contentFile = files.contentFile?.[0];
+    let resolvedFile = null;
+    if (contentFile) {
+      resolvedFile = contentFile.filename;
+    } else if (req.body.fileUrl && req.body.fileUrl.trim()) {
+      resolvedFile = req.body.fileUrl.trim();
+    }
+    if (requiresFile && !resolvedFile) {
+      if (!(allowsTextFallback && trimmedText)) {
+        await deleteFileIfExists(thumbFile.filename);
+        if (videoFile) await deleteFileIfExists(videoFile.filename);
+        if (contentFile) await deleteFileIfExists(contentFile.filename);
+        return res.status(400).json({ error: 'Upload or link a file for this content type' });
+      }
+    }
+
+    let parsedQuiz = undefined;
+    if (isQuizCategory) {
+      if (!req.body.quizData) {
+        await deleteFileIfExists(thumbFile.filename);
+        if (videoFile) await deleteFileIfExists(videoFile.filename);
+        if (contentFile) await deleteFileIfExists(contentFile.filename);
+        return res.status(400).json({ error: 'Quiz content is required' });
+      }
+      try {
+        parsedQuiz = typeof req.body.quizData === 'string'
+          ? JSON.parse(req.body.quizData)
+          : req.body.quizData;
+      } catch (err) {
+        await deleteFileIfExists(thumbFile.filename);
+        if (videoFile) await deleteFileIfExists(videoFile.filename);
+        if (contentFile) await deleteFileIfExists(contentFile.filename);
+        return res.status(400).json({ error: 'Quiz data must be valid JSON' });
+      }
+    }
+
+    const content = new Content({
+      id: new mongoose.Types.ObjectId().toString(),
+      playlist_id: playlistKey,
+      tutor_id: ctx.user._id.toString(),
+      title,
+      description,
+      video: resolvedVideo,
+      thumb: thumbFile.filename,
+      order: numericOrder,
+      textContent: trimmedText,
+      fileUrl: resolvedFile,
+      quizData: parsedQuiz,
+      annotations: {
+        format,
+        type,
+        category
+      }
+    });
+    await content.save();
+
+    course.lessons = await Content.countDocuments({ playlist_id: playlistKey });
+    await course.save();
+
+    res.status(201).json(formatMaterial(content));
+  } catch (err) {
+    console.error('Teacher material creation error:', err);
+    if (files.thumb?.[0]) await deleteFileIfExists(files.thumb[0].filename);
+    if (files.videoFile?.[0]) await deleteFileIfExists(files.videoFile[0].filename);
+    if (files.contentFile?.[0]) await deleteFileIfExists(files.contentFile[0].filename);
+    res.status(500).json({ error: 'Failed to upload material' });
+  }
+});
+
+router.put('/teacher/:courseId/materials/:materialId', materialUpload, async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  const files = req.files || {};
+  const thumbFile = files.thumb?.[0];
+  const videoFile = files.videoFile?.[0];
+  const contentFile = files.contentFile?.[0];
+  const {
+    title,
+    description,
+    order,
+    format,
+    type,
+    category,
+    videoUrl,
+    textContent,
+    fileUrl: fileUrlBody,
+    quizData
+  } = req.body;
+
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+      if (videoFile) await deleteFileIfExists(videoFile.filename);
+      if (contentFile) await deleteFileIfExists(contentFile.filename);
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    const playlistKey = course.id || course.playlistId?.toString();
+    if (!playlistKey) {
+      if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+      if (videoFile) await deleteFileIfExists(videoFile.filename);
+      if (contentFile) await deleteFileIfExists(contentFile.filename);
+      return res.status(400).json({ error: 'Course is missing playlist reference' });
+    }
+
+    const material = await Content.findById(req.params.materialId);
+    if (!material || material.playlist_id !== playlistKey) {
+      if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+      if (videoFile) await deleteFileIfExists(videoFile.filename);
+      if (contentFile) await deleteFileIfExists(contentFile.filename);
+      return res.status(404).json({ error: 'Material not found' });
+    }
+
+    if (title) material.title = title;
+    if (description) material.description = description;
+
+    if (order !== undefined && order !== '') {
+      const numericOrder = parseInt(order, 10);
+      if (Number.isNaN(numericOrder) || numericOrder < 1) {
+        if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+        if (videoFile) await deleteFileIfExists(videoFile.filename);
+        if (contentFile) await deleteFileIfExists(contentFile.filename);
+        return res.status(400).json({ error: 'Lesson number must be a whole number starting at 1' });
+      }
+      material.order = numericOrder;
+    }
+
+    if (format) {
+      if (!FORMAT_OPTIONS.includes(format)) {
+        return res.status(400).json({ error: 'Invalid primary format selection' });
+      }
+      material.annotations.format = format;
+    }
+    if (type) {
+      if (!TYPE_OPTIONS.includes(type)) {
+        return res.status(400).json({ error: 'Invalid content type selection' });
+      }
+      material.annotations.type = type;
+    }
+    if (category) {
+      if (!CATEGORY_OPTIONS.includes(category)) {
+        return res.status(400).json({ error: 'Invalid content category selection' });
+      }
+      material.annotations.category = category;
+    }
+
+    const targetCategory = material.annotations?.category || 'Video';
+    const requiresVideo = ['Video', 'Example'].includes(targetCategory);
+    const requiresFile = ['Reading', 'Exercise', 'Concept Map', 'Audio', 'Flashcards', 'PDF', 'Outline'].includes(targetCategory);
+    const allowsTextFallback = ['Reading', 'Exercise', 'Flashcards', 'Outline'].includes(targetCategory);
+    const isQuizCategory = targetCategory === 'Quiz';
+    const fallbackTextCandidate = textContent && textContent.trim()
+      ? textContent.trim()
+      : (material.textContent && typeof material.textContent === 'string' ? material.textContent.trim() : '');
+
+    if (videoFile) {
+      if (isLocalAsset(material.video)) await deleteFileIfExists(material.video);
+      material.video = videoFile.filename;
+    } else if (videoUrl && videoUrl.trim()) {
+      if (isLocalAsset(material.video)) await deleteFileIfExists(material.video);
+      material.video = videoUrl.trim();
+    } else if (requiresVideo && !material.video) {
+      return res.status(400).json({ error: 'Provide a video file or URL for this content type' });
+    }
+
+    if (contentFile) {
+      if (isLocalAsset(material.fileUrl)) await deleteFileIfExists(material.fileUrl);
+      material.fileUrl = contentFile.filename;
+    } else if (fileUrlBody && fileUrlBody.trim()) {
+      if (isLocalAsset(material.fileUrl)) await deleteFileIfExists(material.fileUrl);
+      material.fileUrl = fileUrlBody.trim();
+    } else if (requiresFile && !material.fileUrl) {
+      if (!(allowsTextFallback && fallbackTextCandidate)) {
+        return res.status(400).json({ error: 'Upload or link a file for this content type' });
+      }
+    }
+
+    if (textContent !== undefined) {
+      material.textContent = fallbackTextCandidate || undefined;
+    }
+
+    if (isQuizCategory) {
+      if (quizData !== undefined) {
+        try {
+          material.quizData = typeof quizData === 'string' ? JSON.parse(quizData) : quizData;
+        } catch (err) {
+          if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+          if (videoFile) await deleteFileIfExists(videoFile.filename);
+          if (contentFile) await deleteFileIfExists(contentFile.filename);
+          return res.status(400).json({ error: 'Quiz data must be valid JSON' });
+        }
+      } else if (!material.quizData) {
+        return res.status(400).json({ error: 'Quiz content is required' });
+      }
+    } else if (quizData !== undefined && quizData === '') {
+      material.quizData = undefined;
+    }
+
+    if (thumbFile) {
+      if (isLocalAsset(material.thumb)) await deleteFileIfExists(material.thumb);
+      material.thumb = thumbFile.filename;
+    }
+
+    await material.save();
+    course.lessons = await Content.countDocuments({ playlist_id: playlistKey });
+    await course.save();
+    res.json(formatMaterial(material));
+  } catch (err) {
+    console.error('Teacher material update error:', err);
+    if (thumbFile) await deleteFileIfExists(thumbFile.filename);
+    if (videoFile) await deleteFileIfExists(videoFile.filename);
+    if (contentFile) await deleteFileIfExists(contentFile.filename);
+    res.status(500).json({ error: 'Failed to update material' });
+  }
+});
+// GET /api/courses/manage - List stored courses (admin only)
+router.get('/manage', async (req, res) => {
+  try {
+    const { decoded } = await getRequestContext(req);
+    if (!decoded || decoded.userType !== 'Admin') {
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const courses = await Course.find().sort({ title: 1 }).lean();
+    res.json(courses);
+  } catch (err) {
+    console.error('Manage courses fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch courses' });
+  }
+});
+
+// POST /api/courses/create - Create a course (admin only)
+router.post('/create', upload.single('thumb'), async (req, res) => {
+  try {
+    const { decoded } = await getRequestContext(req);
+    if (!decoded || decoded.userType !== 'Admin') {
+      if (req.file) await deleteFileIfExists(req.file.filename);
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const {
+      id,
+      title,
+      description,
+      subtitle = '',
+      backgroundImage = '',
+      lessons,
+      duration = '',
+      students,
+      featured
+    } = req.body;
+
+    if (!title || !description) {
+      if (req.file) await deleteFileIfExists(req.file.filename);
+      return res.status(400).json({ error: 'Title and description are required' });
+    }
+
+    const courseId = (id && id.trim()) ? id.trim() : generateCourseId(title);
+    const thumb = req.file ? req.file.filename : '';
+
+    const newCourse = new Course({
+      id: courseId,
+      title,
+      description,
+      subtitle,
+      backgroundImage,
+      thumb,
+      lessons: toNumber(lessons),
+      duration,
+      students: toNumber(students),
+      featured: toBoolean(featured)
+    });
+
+    await newCourse.save();
+    res.status(201).json({ message: 'Course created', course: newCourse });
+  } catch (err) {
+    console.error('Course creation error:', err);
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'A course with that identifier already exists' });
+    }
+    res.status(500).json({ error: 'Failed to create course' });
+  }
+});
+
+// PUT /api/courses/:courseId - Update a course (admin only)
+router.put('/:courseId', upload.single('thumb'), async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const { decoded } = await getRequestContext(req);
+    if (!decoded || decoded.userType !== 'Admin') {
+      if (req.file) await deleteFileIfExists(req.file.filename);
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const course = await Course.findById(courseId);
+    if (!course) {
+      if (req.file) await deleteFileIfExists(req.file.filename);
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const {
+      title,
+      description,
+      subtitle,
+      backgroundImage,
+      lessons,
+      duration,
+      students,
+      featured
+    } = req.body;
+
+    if (title) course.title = title;
+    if (description) course.description = description;
+    if (subtitle !== undefined) course.subtitle = subtitle;
+    if (backgroundImage !== undefined) course.backgroundImage = backgroundImage;
+    if (lessons !== undefined) course.lessons = toNumber(lessons, course.lessons);
+    if (duration !== undefined) course.duration = duration;
+    if (students !== undefined) course.students = toNumber(students, course.students);
+    if (featured !== undefined) course.featured = toBoolean(featured, course.featured);
+
+    if (req.file) {
+      await deleteFileIfExists(course.thumb);
+      course.thumb = req.file.filename;
+    }
+
+    await course.save();
+    res.json({ message: 'Course updated', course });
+  } catch (err) {
+    console.error('Course update error:', err);
+    if (req.file) await deleteFileIfExists(req.file.filename);
+    res.status(500).json({ error: 'Failed to update course' });
+  }
+});
+
+// GET /api/courses/:courseId/materials/:materialId - Fetch a single material for playback
+router.get('/:courseId/materials/:materialId', async (req, res) => {
+  const { courseId, materialId } = req.params;
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const isStudent = user.constructor?.modelName === 'Student';
+    const isTeacher = user.constructor?.modelName === 'Teacher';
+    const isAdmin = user.constructor?.modelName === 'Admin';
+
+    if (isStudent && (!Array.isArray(user.enrolledCourses) || !user.enrolledCourses.includes(courseId))) {
+      return res.status(403).json({ error: 'Enroll in this course to access materials' });
+    }
+
+    const storedCourse = await Course.findOne({ $or: [{ id: courseId }, { _id: courseId }] }).lean();
+    const materialQuery = [{ id: materialId }];
+    if (mongoose.Types.ObjectId.isValid(materialId)) {
+      materialQuery.push({ _id: materialId });
+    }
+
+    const playlists = await Playlist.find({
+      $or: [
+        { id: courseId },
+        { _id: courseId },
+        storedCourse?.playlistId ? { _id: storedCourse.playlistId } : null
+      ].filter(Boolean)
+    }).lean();
+    const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
+
+    const material = await Content.findOne({
+      playlist_id: { $in: playlistKeys },
+      $or: materialQuery
+    }).lean();
+
+    if (!material) {
+      return res.status(404).json({ error: 'Material not found' });
+    }
+
+    const formatted = formatMaterial(material);
+    const courseSummary = buildCourseSummary(courseId, storedCourse);
+    const response = {
+      course: courseSummary,
+      material: {
+        ...formatted,
+        textContent: material.textContent || '',
+        quizData: material.quizData || null,
+        hasVideo: Boolean(formatted.videoUrl),
+        hasFile: Boolean(formatted.fileUrl),
+        hasText: Boolean(material.textContent),
+        isTeacher,
+        isAdmin
+      }
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error('Material fetch error:', err);
+    res.status(500).json({ error: 'Failed to load material' });
+  }
+});
+
+// POST /api/courses/:courseId/materials/:materialId/interaction - Track student interaction
+router.post('/:courseId/materials/:materialId/interaction', async (req, res) => {
+  const { courseId, materialId } = req.params;
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const isStudent = user.constructor?.modelName === 'Student';
+    if (!isStudent) {
+      return res.status(403).json({ error: 'Only students can track progress' });
+    }
+    if (!Array.isArray(user.enrolledCourses) || !user.enrolledCourses.includes(courseId)) {
+      return res.status(403).json({ error: 'Enroll in this course to track progress' });
+    }
+
+    const storedCourse = await Course.findOne({ $or: [{ id: courseId }, { _id: courseId }] }).lean();
+    const materialQuery = [{ id: materialId }];
+    if (mongoose.Types.ObjectId.isValid(materialId)) {
+      materialQuery.push({ _id: materialId });
+    }
+    const playlists = await Playlist.find({
+      $or: [
+        { id: courseId },
+        { _id: courseId },
+        storedCourse?.playlistId ? { _id: storedCourse.playlistId } : null
+      ].filter(Boolean)
+    }).lean();
+    const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
+
+    const material = await Content.findOne({
+      playlist_id: { $in: playlistKeys },
+      $or: materialQuery
+    }).lean();
+    if (!material) {
+      return res.status(404).json({ error: 'Material not found' });
+    }
+
+    const timeSpentSeconds = Math.max(0, Number(req.body.timeSpentSeconds) || 0);
+    const completed = req.body.completed === undefined ? true : Boolean(req.body.completed);
+
+    await Interaction.findOneAndUpdate(
+      { user_id: user._id.toString(), content_id: material.id },
+      {
+        user_id: user._id.toString(),
+        content_id: material.id,
+        playlist_id: material.playlist_id,
+        annotations: {
+          format: material.annotations?.format || 'Visual',
+          type: material.annotations?.type || 'Abstract',
+          category: material.annotations?.category || 'Video',
+          order: material.order ?? 0
+        },
+        timeSpentSeconds,
+        completed,
+        timestamp: new Date()
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    const progress = await computeCourseProgress(courseId, user._id.toString(), {
+      playlistIds: playlistKeys
+    });
+    res.json({
+      message: 'Interaction recorded',
+      progress: {
+        percent: progress.percent,
+        totalMaterials: progress.totalMaterials,
+        completedMaterials: progress.completedCount
+      }
+    });
+  } catch (err) {
+    console.error('Material interaction error:', err);
+    res.status(500).json({ error: 'Failed to record interaction' });
+  }
+});
+
+// ---
+// --- HEAVILY MODIFIED: Personalized course materials with filters ---
+// ---
 router.get('/:courseId', async (req, res) => {
   const { courseId } = req.params;
-  const page = parseInt(req.query.page) || 1;
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const PAGE_SIZE = Math.max(parseInt(req.query.pageSize, 10) || 12, 1);
   const search = req.query.search || '';
-  const PAGE_SIZE = 10;
+  const activeCategory = req.query.category || 'All';
+
   try {
-    // Example: fetch playlists and contents for the course
-    const playlists = await Playlist.find({ course: courseId });
-    const materialsRaw = await Content.find({
-      course: courseId,
-      title: { $regex: search, $options: 'i' }
-    })
-      .skip((page - 1) * PAGE_SIZE)
-      .limit(PAGE_SIZE);
-    // Map materials to include thumb, title, videoUrl
-    const materials = materialsRaw.map(mat => ({
-      id: mat._id,
-      title: mat.title,
-      thumb: mat.thumb || 'https://via.placeholder.com/640x360/222/fff?text=Material',
-      videoUrl: mat.videoUrl || '',
-      description: mat.description || ''
-    }));
-    // Example progress (replace with real logic)
-    let progress = null;
-    if (req.headers.authorization) {
-      const token = req.headers.authorization.split(' ')[1];
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'apex101_secret');
-        const user = await User.findById(decoded.id);
-        // Calculate progress based on user activity (stub)
-        progress = Math.floor(Math.random() * 100); // Replace with real progress
-      } catch {}
+    const { user } = await getRequestContext(req);
+    const storedCourse = await Course.findOne({ $or: [{ id: courseId }, { _id: courseId }] }).lean();
+    const courseSummary = buildCourseSummary(courseId, storedCourse);
+
+    const isStudent = user?.constructor?.modelName === 'Student';
+    const isTeacher = user?.constructor?.modelName === 'Teacher';
+    const isAdmin = user?.constructor?.modelName === 'Admin';
+    const userId = user?._id?.toString() || null;
+    const isEnrolled = isStudent
+      ? Array.isArray(user.enrolledCourses) && user.enrolledCourses.includes(courseId)
+      : Boolean(user);
+
+    // Fetch playlists for legacy compatibility
+    const playlistQuery = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      playlistQuery.push({ _id: courseId });
     }
-    res.json({ materials, playlists, progress });
+    if (storedCourse?.playlistId && mongoose.Types.ObjectId.isValid(storedCourse.playlistId)) {
+      playlistQuery.push({ _id: storedCourse.playlistId });
+    }
+    const playlists = await Playlist.find({ $or: playlistQuery }).lean();
+
+    const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
+    if (!playlistKeys.length) {
+      playlistKeys.push(courseId);
+    }
+
+    const baseFilter = { playlist_id: { $in: playlistKeys } };
+    const materialsRaw = await Content.find({
+      ...baseFilter,
+      ...(search ? { title: { $regex: search, $options: 'i' } } : {})
+    }).sort({ order: 1, date: -1 }).lean();
+    const totalMaterialsCount = await Content.countDocuments(baseFilter);
+
+    const categoryCounts = materialsRaw.reduce((acc, mat) => {
+      const category = mat.annotations?.category || 'Uncategorized';
+      acc[category] = (acc[category] || 0) + 1;
+      return acc;
+    }, {});
+
+    const categories = [
+      { key: 'All', label: 'All', count: materialsRaw.length },
+      ...Object.entries(categoryCounts)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([key, count]) => ({ key, label: key, count }))
+    ];
+
+    let filteredMaterials = materialsRaw;
+    if (activeCategory && activeCategory !== 'All') {
+      filteredMaterials = filteredMaterials.filter(mat =>
+        (mat.annotations?.category || 'Uncategorized') === activeCategory
+      );
+    }
+
+    let visibleItems = [...filteredMaterials];
+    let hiddenItems = [];
+    const learningStyle = user?.learningStyle || null;
+
+    if (learningStyle) {
+      if (learningStyle.is_verbal === 0) {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.format === 'Visual') return -1;
+          if (b.annotations.format === 'Visual') return 1;
+          return 0;
+        });
+        hiddenItems = visibleItems.filter(o => o.annotations.format === 'Verbal');
+        visibleItems = visibleItems.filter(o => o.annotations.format !== 'Verbal');
+      } else {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.format === 'Verbal') return -1;
+          if (b.annotations.format === 'Verbal') return 1;
+          return 0;
+        });
+        hiddenItems = visibleItems.filter(o => o.annotations.format === 'Visual');
+        visibleItems = visibleItems.filter(o => o.annotations.format !== 'Visual');
+      }
+
+      if (learningStyle.is_intuitive === 0) {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.type === 'Concrete') return -1;
+          if (b.annotations.type === 'Concrete') return 1;
+          return 0;
+        });
+      } else {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.type === 'Abstract') return -1;
+          if (b.annotations.type === 'Abstract') return 1;
+          return 0;
+        });
+      }
+
+      if (learningStyle.is_reflective === 0) {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.category === 'Exercise') return -1;
+          if (b.annotations.category === 'Exercise') return 1;
+          return 0;
+        });
+        const examples = visibleItems.filter(o => o.annotations.category === 'Example');
+        const nonExamples = visibleItems.filter(o => o.annotations.category !== 'Example');
+        const examplesToHide = examples.slice(Math.floor(examples.length / 2));
+        const examplesToShow = examples.slice(0, Math.floor(examples.length / 2));
+        visibleItems = nonExamples.concat(examplesToShow);
+        hiddenItems = hiddenItems.concat(examplesToHide);
+      } else {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.category === 'Example') return -1;
+          if (b.annotations.category === 'Example') return 1;
+          return 0;
+        });
+        const exercises = visibleItems.filter(o => o.annotations.category === 'Exercise');
+        const nonExercises = visibleItems.filter(o => o.annotations.category !== 'Exercise');
+        const exercisesToHide = exercises.slice(Math.floor(exercises.length / 2));
+        const exercisesToShow = exercises.slice(0, Math.floor(exercises.length / 2));
+        visibleItems = nonExercises.concat(exercisesToShow);
+        hiddenItems = hiddenItems.concat(exercisesToHide);
+      }
+
+      if (learningStyle.is_global === 1) {
+        visibleItems.sort((a, b) => {
+          if (a.annotations.category === 'Outline' || a.annotations.category === 'Concept Map') return -1;
+          if (b.annotations.category === 'Outline' || b.annotations.category === 'Concept Map') return 1;
+          return 0;
+        });
+      }
+    }
+
+    const start = (page - 1) * PAGE_SIZE;
+    const paginatedVisibleItems = visibleItems.slice(start, start + PAGE_SIZE);
+
+    const progress = await computeCourseProgress(courseId, userId, {
+      playlistIds: playlistKeys,
+      totalMaterialsOverride: totalMaterialsCount
+    });
+    const completedIds = progress.completedIds || new Set();
+
+    const materials = (isStudent && !isEnrolled) ? [] : paginatedVisibleItems.map(mat => {
+      const formatted = formatMaterial(mat);
+      return {
+        ...formatted,
+        isCompleted: completedIds.has(mat.id)
+      };
+    });
+
+    const mappedHiddenItems = hiddenItems.map(mat => {
+      const formatted = formatMaterial(mat);
+      return {
+        ...formatted,
+        isCompleted: completedIds.has(mat.id)
+      };
+    });
+
+    res.json({
+      course: {
+        ...courseSummary,
+        isEnrolled: isEnrolled || isTeacher || isAdmin,
+        progressPercent: progress.percent,
+        totalMaterials: progress.totalMaterials,
+        completedMaterials: progress.completedCount
+      },
+      materials,
+      hiddenItems: mappedHiddenItems,
+      playlists,
+      filters: {
+        categories,
+        activeCategory
+      },
+      pagination: {
+        page,
+        pageSize: PAGE_SIZE,
+        totalItems: visibleItems.length
+      },
+      enrollmentRequired: Boolean(user) && isStudent && !isEnrolled
+    });
   } catch (err) {
+    console.error('Course materials fetch error:', err);
     res.status(500).json({ error: 'Failed to fetch course materials' });
   }
 });
@@ -116,8 +1326,10 @@ router.post('/enroll/:courseId', async (req, res) => {
   try {
     const token = req.headers.authorization.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'apex101_secret');
-    const user = await User.findById(decoded.id);
+    // FIXED: Use our helper function to find the user
+    const user = await findUserById(decoded.id); 
     if (!user) return res.status(404).json({ error: 'User not found' });
+
     // Example: add courseId to user's enrolledCourses array
     if (!user.enrolledCourses) user.enrolledCourses = [];
     if (!user.enrolledCourses.includes(courseId)) {
@@ -126,6 +1338,7 @@ router.post('/enroll/:courseId', async (req, res) => {
     }
     res.json({ message: 'Enrolled successfully' });
   } catch (err) {
+    console.error(err); // Log the full error
     res.status(500).json({ error: 'Enrollment failed' });
   }
 });

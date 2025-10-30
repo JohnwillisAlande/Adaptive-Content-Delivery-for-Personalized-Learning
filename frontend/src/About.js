@@ -1,28 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { jwtDecode } from 'jwt-decode';
 import { toast } from 'react-toastify';
 import { ClipLoader } from 'react-spinners';
 import './App.css';
-
+import { useAuth } from './context/AuthContext';
+import api from './api';
 
 function About() {
   const [about, setAbout] = useState({ title: '', description: '', mission: '', vision: '' });
   const [loading, setLoading] = useState(true);
-  const [userType, setUserType] = useState('');
   const [editMode, setEditMode] = useState(false);
+  const { user, initializing } = useAuth();
+
+  const userType = user?.userType || '';
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      try {
-        setUserType(jwtDecode(token).userType);
-      } catch {}
-    }
-    fetch('/api/about', {
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-    })
-      .then(res => res.json())
-      .then(data => {
+    if (initializing) return;
+    api.get('/about')
+      .then(({ data }) => {
         setAbout(data);
         setLoading(false);
       })
@@ -30,7 +24,7 @@ function About() {
         toast.error('Failed to load About Us');
         setLoading(false);
       });
-  }, []);
+  }, [initializing]);
 
   const handleChange = e => {
     setAbout({ ...about, [e.target.name]: e.target.value });
@@ -39,24 +33,12 @@ function About() {
   const handleSubmit = async e => {
     e.preventDefault();
     setLoading(true);
-    const token = localStorage.getItem('token');
     try {
-      const res = await fetch('/api/about', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(about)
-      });
-      if (res.ok) {
-        toast.success('About Us updated!');
-        setEditMode(false);
-      } else {
-        toast.error('Update failed');
-      }
-    } catch {
-      toast.error('Update failed');
+      await api.put('/about', about);
+      toast.success('About Us updated!');
+      setEditMode(false);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Update failed');
     }
     setLoading(false);
   };
@@ -69,17 +51,73 @@ function About() {
     return (
       <section className="about">
         <h1 className="heading">About Us (Admin)</h1>
-        <form className="about-form max-w-xl mx-auto bg-[#1a1d2e] p-8 rounded-xl shadow-lg" onSubmit={handleSubmit}>
-          <label className="block mb-2 font-bold text-teal-400">Title</label>
-          <input type="text" name="title" value={about.title} onChange={handleChange} className="w-full mb-4 p-2 rounded bg-[#23263a] text-white" required />
-          <label className="block mb-2 font-bold text-teal-400">Description</label>
-          <textarea name="description" value={about.description} onChange={handleChange} className="w-full mb-4 p-2 rounded bg-[#23263a] text-white" rows={3} required />
-          <label className="block mb-2 font-bold text-teal-400">Mission</label>
-          <textarea name="mission" value={about.mission} onChange={handleChange} className="w-full mb-4 p-2 rounded bg-[#23263a] text-white" rows={2} required />
-          <label className="block mb-2 font-bold text-teal-400">Vision</label>
-          <textarea name="vision" value={about.vision} onChange={handleChange} className="w-full mb-4 p-2 rounded bg-[#23263a] text-white" rows={2} required />
-          <button type="submit" className="w-full py-2 mt-2 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded transition-all duration-300">Save Changes</button>
-        </form>
+        <div className="form-screen form-screen--plain form-screen--stacked">
+          <form className="form-card form-card--wide" onSubmit={handleSubmit}>
+            <h2 className="form-card__title form-card__title--left">Update your organisation story</h2>
+            <p className="form-card__subtitle form-card__subtitle--left">
+              Keep the public-facing copy current so students, guardians, and partners always understand your mission.
+            </p>
+
+            <div>
+              <label htmlFor="about-title">
+                Title <span className="required-indicator">*</span>
+              </label>
+              <input
+                id="about-title"
+                type="text"
+                name="title"
+                value={about.title}
+                onChange={handleChange}
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="about-description">
+                Description <span className="required-indicator">*</span>
+              </label>
+              <textarea
+                id="about-description"
+                name="description"
+                value={about.description}
+                onChange={handleChange}
+                rows={4}
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="about-mission">
+                Mission <span className="required-indicator">*</span>
+              </label>
+              <textarea
+                id="about-mission"
+                name="mission"
+                value={about.mission}
+                onChange={handleChange}
+                rows={3}
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="about-vision">
+                Vision <span className="required-indicator">*</span>
+              </label>
+              <textarea
+                id="about-vision"
+                name="vision"
+                value={about.vision}
+                onChange={handleChange}
+                rows={3}
+                required
+              />
+            </div>
+
+            <div className="form-actions">
+              <button type="submit" className="btn">
+                Save changes
+              </button>
+            </div>
+          </form>
+        </div>
       </section>
     );
   }

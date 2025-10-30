@@ -1,51 +1,28 @@
-import React, { useState, useEffect } from 'react';
-import { jwtDecode } from 'jwt-decode';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import './App.css';
+import { useAuth } from './context/AuthContext';
+
+const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
+
+const resolveAvatar = (image) => {
+  if (!image) return '';
+  if (image.startsWith('http')) return image;
+  if (image.startsWith('/uploaded_files')) {
+    return `${FILE_BASE_URL}${image}`;
+  }
+  return `${FILE_BASE_URL}/uploaded_files/${image}`;
+};
 
 function UserHeader() {
-  const [sidebarOpen, setSidebarOpen] = useState(true); // Sidebar open by default
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('dark-mode') === 'enabled');
+  const { user, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
 
-
-  // User state: always reflects localStorage token
-  const [user, setUser] = useState({
-    name: '',
-    image: '',
-    loggedIn: false,
-    userType: ''
-  });
-
-  // Check login state on mount and on storage changes
-  useEffect(() => {
-    function syncUser() {
-      const token = localStorage.getItem('token');
-      const name = localStorage.getItem('user_name');
-      const image = localStorage.getItem('user_image');
-      let userType = '';
-      if (token) {
-        try {
-          userType = jwtDecode(token).userType;
-        } catch {}
-        setUser({
-          name: name || 'Student Name',
-          image: image || '',
-          loggedIn: true,
-          userType
-        });
-      } else {
-        setUser({
-          name: '',
-          image: '',
-          loggedIn: false,
-          userType: ''
-        });
-      }
-    }
-    syncUser();
-    window.addEventListener('storage', syncUser);
-    return () => window.removeEventListener('storage', syncUser);
-  }, []);
+  const avatarSrc = useMemo(() => resolveAvatar(user?.image), [user?.image]);
+  const displayName = user?.name || 'Guest';
+  const displayRole = user?.userType || (isAuthenticated ? 'Member' : '');
 
   useEffect(() => {
     if (sidebarOpen) {
@@ -66,15 +43,11 @@ function UserHeader() {
     }
   }, [darkMode]);
 
-  const handleToggleTheme = () => {
-    setDarkMode((prev) => !prev);
-  };
-
   return (
     <>
       <header className="header">
         <section className="flex">
-          <Link to="/home" className="logo">ApexLearn</Link>
+          <Link to={isAuthenticated ? '/home' : '/login'} className="logo">ApexLearn</Link>
           <form className="search-form">
             <input type="text" name="search_course" placeholder="Search courses..." maxLength={100} />
             <button type="submit" className="fas fa-search" name="search_course_btn"></button>
@@ -82,15 +55,21 @@ function UserHeader() {
           <div className="icons">
             <div id="menu-btn" className="fas fa-bars" onClick={() => setSidebarOpen(!sidebarOpen)}></div>
             <div id="search-btn" className="fas fa-search"></div>
-            <div id="user-btn" className="fas fa-user"></div>
-            <div id="toggle-btn" className={`fas ${darkMode ? 'fa-moon' : 'fa-sun'}`} onClick={handleToggleTheme}></div>
+            <div
+              id="user-btn"
+              className="fas fa-user"
+              onClick={() => navigate(isAuthenticated ? '/profile' : '/login')}
+              role="button"
+              tabIndex={0}
+            ></div>
+            <div id="toggle-btn" className={`fas ${darkMode ? 'fa-moon' : 'fa-sun'}`} onClick={() => setDarkMode((prev) => !prev)}></div>
           </div>
           <div className="profile">
-            {user.loggedIn ? (
+            {isAuthenticated ? (
               <>
-                {user.image ? <img src={user.image} alt="" /> : <div className="profile-placeholder"></div>}
-                <h3>{user.name}</h3>
-                <span>Student</span>
+                {avatarSrc ? <img src={avatarSrc} alt={`${displayName}'s profile`} /> : <div className="profile-placeholder"></div>}
+                <h3>{displayName}</h3>
+                <span>{displayRole}</span>
               </>
             ) : (
               <>
@@ -105,17 +84,16 @@ function UserHeader() {
         </section>
       </header>
 
-      {/* Sidebar */}
       <div className={`side-bar${sidebarOpen ? '' : ' active'}`} style={{ left: sidebarOpen ? 0 : '-31rem' }}>
         <div className="close-side-bar" onClick={() => setSidebarOpen(false)}>
           <i className="fas fa-times"></i>
         </div>
         <div className="profile">
-          {user.loggedIn ? (
+          {isAuthenticated ? (
             <>
-              {user.image ? <img src={user.image} alt="" /> : <div className="profile-placeholder"></div>}
-              <h3>{user.name}</h3>
-              <span>{user.userType || 'Student'}</span>
+              {avatarSrc ? <img src={avatarSrc} alt={`${displayName}'s profile`} /> : <div className="profile-placeholder"></div>}
+              <h3>{displayName}</h3>
+              <span>{displayRole}</span>
               <Link to="/profile" className="btn sidebar-profile-btn">View profile</Link>
             </>
           ) : (
@@ -131,8 +109,17 @@ function UserHeader() {
         <nav className="navbar">
           <Link to="/home"><i className="fas fa-home"></i><span>Home</span></Link>
           <Link to="/courses"><i className="fas fa-graduation-cap"></i><span>Courses</span></Link>
+          {user?.userType === 'Student' && (
+            <Link to="/student/courses"><i className="fas fa-layer-group"></i><span>My Courses</span></Link>
+          )}
+          {user?.userType === 'Teacher' && (
+            <>
+              <Link to="/teacher/courses"><i className="fas fa-folder-open"></i><span>My Courses</span></Link>
+              <Link to="/teacher/materials"><i className="fas fa-upload"></i><span>Upload Material</span></Link>
+            </>
+          )}
           <Link to="/teachers"><i className="fas fa-chalkboard-user"></i><span>Teachers</span></Link>
-          {user.userType === 'Admin' && (
+          {user?.userType === 'Admin' && (
             <Link to="/students"><i className="fas fa-users"></i><span>Students</span></Link>
           )}
           <Link to="/about"><i className="fas fa-question"></i><span>About Us</span></Link>

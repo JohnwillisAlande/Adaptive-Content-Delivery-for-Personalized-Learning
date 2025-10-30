@@ -1,74 +1,75 @@
-
-import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { jwtDecode } from 'jwt-decode';
 import { toast } from 'react-toastify';
 import { ClipLoader } from 'react-spinners';
 import './App.css';
+import { useAuth } from './context/AuthContext';
+import api from './api';
+
+const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
+const resolveImage = (image) => {
+  if (!image) return '/images/pic-2.jpg';
+  if (image.startsWith('http')) return image;
+  if (image.startsWith('/uploaded_files')) return `${FILE_BASE_URL}${image}`;
+  return `${FILE_BASE_URL}/uploaded_files/${image}`;
+};
 
 const Teachers = () => {
-
   const [tutors, setTutors] = useState([]);
   const [search, setSearch] = useState('');
-  const [filteredTutors, setFilteredTutors] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [userType, setUserType] = useState(null);
   const navigate = useNavigate();
+  const { user, isAuthenticated, initializing } = useAuth();
+
+  const userType = user?.userType || null;
+  const filteredTutors = useMemo(() => {
+    const term = search.toLowerCase();
+    return tutors.filter(tutor =>
+      tutor.name.toLowerCase().includes(term) ||
+      tutor.email.toLowerCase().includes(term)
+    );
+  }, [tutors, search]);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      try {
-        setUserType(jwtDecode(token).userType);
-      } catch {}
+    if (initializing) return;
+
+    if (!isAuthenticated) {
+      toast.error('Please login to view teachers');
+      navigate('/login', { replace: true });
+      return;
     }
-    axios.get('/api/teachers', {
-      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-    })
-      .then(res => {
-        setTutors(res.data);
-        setFilteredTutors(res.data);
+
+    setLoading(true);
+    api.get('/teachers')
+      .then(({ data }) => {
+        setTutors(Array.isArray(data) ? data : []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
-  }, []);
-
-
-  const handleSearch = (e) => {
-    e.preventDefault();
-    setFilteredTutors(
-      tutors.filter(tutor =>
-        tutor.name.toLowerCase().includes(search.toLowerCase()) ||
-        tutor.email.toLowerCase().includes(search.toLowerCase())
-      )
-    );
-  };
+      .catch(() => {
+        toast.error('Failed to load teachers');
+        setLoading(false);
+      });
+  }, [initializing, isAuthenticated, navigate]);
 
   const handleToggleActive = async (id, active) => {
-    const token = localStorage.getItem('token');
     try {
-      const res = await axios.put(`/api/teachers/${id}/active`, { active: !active }, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      toast.success(res.data.message);
-      setTutors(tutors => tutors.map(t => t._id === id ? { ...t, active: !active } : t));
-      setFilteredTutors(filteredTutors => filteredTutors.map(t => t._id === id ? { ...t, active: !active } : t));
+      const { data } = await api.put(`/teachers/${id}/active`, { active: !active });
+      toast.success(data.message || 'Status updated');
+      setTutors(prev => prev.map(t => (t._id === id ? { ...t, active: !active } : t)));
     } catch (err) {
-      toast.error('Failed to update status');
+      toast.error(err.response?.data?.error || 'Failed to update status');
     }
   };
 
   return (
     <section className="teachers">
       <h1 className="heading">Expert tutors</h1>
-      <form action="#" method="post" className="search-tutor" onSubmit={handleSearch} autoComplete="off">
+      <form action="#" className="search-tutor" onSubmit={e => e.preventDefault()} autoComplete="off">
         <input
           type="text"
           name="search_tutor"
           maxLength="100"
           placeholder="Search tutor..."
-          required
           value={search}
           onChange={e => setSearch(e.target.value)}
           autoComplete="off"
@@ -94,17 +95,22 @@ const Teachers = () => {
               {filteredTutors.map(tutor => (
                 <tr key={tutor._id} className="border-b border-gray-700">
                   <td className="px-4 py-2">
-                    <img src={tutor.image ? `/uploaded_files/${tutor.image}` : '/images/pic-2.jpg'} alt="profile" className="w-12 h-12 object-cover rounded-lg" />
+                    <img src={resolveImage(tutor.image)} alt="profile" className="w-12 h-12 object-cover rounded-lg" />
                   </td>
                   <td className="px-4 py-2 font-bold">{tutor.name}</td>
                   <td className="px-4 py-2">{tutor.profession}</td>
                   <td className="px-4 py-2">{tutor.email}</td>
                   <td className="px-4 py-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${tutor.active ? 'bg-green-600' : 'bg-red-600'}`}>{tutor.active ? 'Active' : 'Disabled'}</span>
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${tutor.active ? 'bg-green-600' : 'bg-red-600'}`}>
+                      {tutor.active ? 'Active' : 'Disabled'}
+                    </span>
                   </td>
                   <td className="px-4 py-2 flex gap-2">
                     <button onClick={() => navigate(`/teachers/${tutor._id}`)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold transition-all duration-300">View</button>
-                    <button onClick={() => handleToggleActive(tutor._id, tutor.active)} className={`px-4 py-2 ${tutor.active ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white rounded-lg font-bold transition-all duration-300`}>
+                    <button
+                      onClick={() => handleToggleActive(tutor._id, tutor.active)}
+                      className={`px-4 py-2 ${tutor.active ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white rounded-lg font-bold transition-all duration-300`}
+                    >
                       {tutor.active ? 'Disable' : 'Enable'}
                     </button>
                   </td>
@@ -126,7 +132,7 @@ const Teachers = () => {
             filteredTutors.map(tutor => (
               <div className="box" key={tutor._id}>
                 <div className="tutor">
-                  <img src={tutor.image ? `/uploaded_files/${tutor.image}` : '/images/pic-2.jpg'} alt="" />
+                  <img src={resolveImage(tutor.image)} alt="" />
                   <div>
                     <h3>{tutor.name}</h3>
                     <span>{tutor.profession}</span>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import UserHeader from './UserHeader';
 
 import Login from './Login';
@@ -18,14 +18,27 @@ import ResetPassword from './ResetPassword';
 import PasswordResetSuccess from './PasswordResetSuccess';
 import AuthCallback from './AuthCallback';  // Added import for GitHub callback handler
 import './App.css';
+import { useAuth } from './context/AuthContext';
 
 import { Suspense } from 'react';
 const CoursesDetail = React.lazy(() => import('./CoursesDetail'));
-const CreateCourse = React.lazy(() => import('./CreateCourse'));
-const ModifyCourse = React.lazy(() => import('./ModifyCourse'));
+const TeacherCourses = React.lazy(() => import('./TeacherCourses'));
+const UploadMaterial = React.lazy(() => import('./UploadMaterial'));
+const StudentCourses = React.lazy(() => import('./StudentCourses'));
+const MaterialViewer = React.lazy(() => import('./MaterialViewer'));
 
 
 function App() {
+  const { initializing } = useAuth();
+
+  if (initializing) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0f1117] text-white">
+        Loading session...
+      </div>
+    );
+  }
+
   return (
     <>
     <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
@@ -36,11 +49,29 @@ function App() {
           <Route path="/register" element={<Register />} />
           <Route path="/home" element={<Home />} />
           <Route path="/courses" element={<Courses />} />
-          <Route path="/courses/create" element={<Suspense fallback={<div className='flex justify-center py-10'><span>Loading...</span></div>}><CreateCourse /></Suspense>} />
-          <Route path="/courses/modify" element={<Suspense fallback={<div className='flex justify-center py-10'><span>Loading...</span></div>}><ModifyCourse /></Suspense>} />
           <Route path="/courses/:courseId" element={
             <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
               <CoursesDetail />
+            </Suspense>
+          } />
+          <Route path="/courses/:courseId/materials/:materialId" element={
+            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+              <MaterialViewer />
+            </Suspense>
+          } />
+          <Route path="/teacher/courses" element={
+            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+              <TeacherCourses />
+            </Suspense>
+          } />
+          <Route path="/teacher/materials" element={
+            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+              <UploadMaterial />
+            </Suspense>
+          } />
+          <Route path="/student/courses" element={
+            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+              <StudentCourses />
             </Suspense>
           } />
           <Route path="/profile" element={<Profile />} />

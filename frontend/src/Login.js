@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import { Link, useNavigate } from 'react-router-dom';
 import { useGoogleLogin } from '@react-oauth/google';  // Changed to useGoogleLogin hook
-import { jwtDecode } from "jwt-decode";
+import { toast } from 'react-toastify';
+import api from './api';
+import { useAuth } from './context/AuthContext';
 
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [userType, setUserType] = useState('Student');
   const [error, setError] = useState('');
+  const { login } = useAuth();
   const navigate = useNavigate();
 
   const handleUserTypeChange = e => {
@@ -23,10 +25,9 @@ function Login() {
       return;
     }
     try {
-      const res = await axios.post('http://localhost:5000/api/login', { email, password, userType });
+      const res = await api.post('/login', { email, password, userType });
       const token = res.data.token;
-      localStorage.setItem('token', token);
-      const decoded = jwtDecode(token);
+      await login(token);
       if (res.data.require2fa) {
         navigate('/2fa');
       } else {
@@ -46,13 +47,12 @@ function Login() {
         return;
       }
       try {
-        const res = await axios.post('http://localhost:5000/api/auth/google', {
+        const res = await api.post('/auth/google', {
           token: tokenResponse.access_token,
           userType
         });
         const token = res.data.token;
-        localStorage.setItem('token', token);
-        const decoded = jwtDecode(token);
+        await login(token);
         if (res.data.require2fa) {
           navigate('/2fa');
         } else {
@@ -84,10 +84,12 @@ function Login() {
   // (Removed duplicate handleGithubLogin)
 
   return (
-    <section className="form-container" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <form onSubmit={handleSubmit} className="login" style={{ maxWidth: 400, width: '100%', background: 'var(--white)', borderRadius: '.5rem', padding: '2rem', boxShadow: '0 2px 8px rgba(44,62,80,0.04)' }}>
-        {/* User type selection */}
-        <div style={{ marginBottom: '1rem', display: 'flex', gap: '1.5rem', justifyContent: 'center' }}>
+    <section className="form-screen">
+      <form onSubmit={handleSubmit} className="form-card form-card--wide">
+        <h2 className="form-card__title">Log in to ApexLearn</h2>
+        <p className="form-card__subtitle">Choose the correct account type to unlock your personalised dashboard.</p>
+
+        <div className="form-tab-group" role="radiogroup" aria-label="Select user type">
           <label>
             <input
               type="radio"
@@ -96,9 +98,8 @@ function Login() {
               checked={userType === 'Student'}
               onChange={handleUserTypeChange}
               aria-label="Login as Student option"
-              style={{ marginRight: '0.5rem' }}
             />
-            Login as Student
+            <span>Login as Student</span>
           </label>
           <label>
             <input
@@ -108,9 +109,8 @@ function Login() {
               checked={userType === 'Teacher'}
               onChange={handleUserTypeChange}
               aria-label="Login as Teacher option"
-              style={{ marginRight: '0.5rem' }}
             />
-            Login as Teacher
+            <span>Login as Teacher</span>
           </label>
           <label>
             <input
@@ -120,86 +120,74 @@ function Login() {
               checked={userType === 'Admin'}
               onChange={handleUserTypeChange}
               aria-label="Login as Admin option"
-              style={{ marginRight: '0.5rem' }}
             />
-            Login as Admin
+            <span>Login as Admin</span>
           </label>
         </div>
-        {/* ...existing form fields for email, password, links, error, submit... */}
-        <p style={{ textAlign: 'left', marginBottom: '.5rem', color: 'var(--black)', fontSize: '1.2rem' }}>Your email <span style={{ color: 'var(--red)' }}>*</span></p>
-        <input
-          type="email"
-          name="email"
-          placeholder="Enter your email"
-          maxLength={50}
-          required
-          className="box"
-          style={{ marginBottom: '1rem' }}
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-        />
-        <p style={{ textAlign: 'left', marginBottom: '.5rem', color: 'var(--black)', fontSize: '1.2rem' }}>Your password <span style={{ color: 'var(--red)' }}>*</span></p>
-        <input
-          type="password"
-          name="pass"
-          placeholder="Enter your password"
-          maxLength={20}
-          required
-          className="box"
-          style={{ marginBottom: '1rem' }}
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-        />
-        <p className="link" style={{ textAlign: 'left', margin: 0, fontSize: '1rem', color: 'var(--black)' }}>
-          Don't have an account? <Link to="/register" style={{ color: 'var(--main-color)', textDecoration: 'underline' }}>Register now</Link>
-        </p>
-        <p style={{ textAlign: 'right', margin: '0 0 1rem 0', fontSize: '1rem' }}>
-          <Link to="/forgot-password" style={{ color: '#00a085', textDecoration: 'underline', fontWeight: 600 }}>Forgot Password?</Link>
-        </p>
-        {error && <div className="error" style={{ color: 'var(--red)', marginBottom: '1rem', fontSize: '1rem' }}>{error}</div>}
-        <input type="submit" name="submit" value="Login now" className="btn" style={{ marginTop: '1.5rem' }} />
 
-        {/* Social Logins */}
-        <div style={{ marginTop: '1rem', textAlign: 'center' }}>
-          <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: 'var(--gray)' }}>Or continue with</p>
+        <div>
+          <label htmlFor="login-email">
+            Your email <span className="required-indicator">*</span>
+          </label>
+          <input
+            id="login-email"
+            type="email"
+            name="email"
+            placeholder="Enter your email"
+            maxLength={50}
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor="login-password">
+            Your password <span className="required-indicator">*</span>
+          </label>
+          <input
+            id="login-password"
+            type="password"
+            name="pass"
+            placeholder="Enter your password"
+            maxLength={20}
+            required
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+          />
+        </div>
+
+        <div className="form-link-row">
+          <span className="form-link">
+            Don't have an account? <Link to="/register">Register now</Link>
+          </span>
+          <Link to="/forgot-password">Forgot Password?</Link>
+        </div>
+
+        {error && <div className="form-message error">{error}</div>}
+
+        <div className="form-actions">
+          <button type="submit" className="btn" name="submit">
+            Login now
+          </button>
+        </div>
+
+        <div className="supporting-text">Or continue with</div>
+        <div className="social-buttons">
           <button
+            type="button"
             onClick={() => googleLogin()}
             disabled={userType === 'Admin'}
-            style={{
-              width: '100%',
-              padding: '0.75rem',
-              background: 'white',
-              color: '#4285f4',
-              border: '1px solid #dadce0',
-              borderRadius: '4px',
-              cursor: userType === 'Admin' ? 'not-allowed' : 'pointer',
-              fontSize: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.5rem',
-              opacity: userType === 'Admin' ? 0.5 : 1
-            }}
+            className="social-button google"
             aria-label="Sign in with Google"
           >
-            <img src="https://developers.google.com/identity/images/g-logo.png" alt="Google" style={{ width: '18px', height: '18px' }} />
+            <img src="https://developers.google.com/identity/images/g-logo.png" alt="Google" width="18" height="18" />
             Sign in with Google
           </button>
           <button
+            type="button"
             onClick={handleGithubLogin}
             disabled={userType === 'Admin'}
-            style={{
-              marginTop: '0.5rem',
-              width: '100%',
-              padding: '0.75rem',
-              background: '#24292e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: userType === 'Admin' ? 'not-allowed' : 'pointer',
-              fontSize: '1rem',
-              opacity: userType === 'Admin' ? 0.5 : 1
-            }}
+            className="social-button github"
             aria-label="Sign in with GitHub"
           >
             Sign in with GitHub

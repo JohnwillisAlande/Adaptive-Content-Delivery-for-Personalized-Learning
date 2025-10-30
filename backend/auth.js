@@ -1,5 +1,3 @@
-// C:\xampp\htdocs\AdaptiveEduApp\backend\auth.js
-
 // 1. CORE DEPENDENCIES AND ROUTER INITIALIZATION
 const express = require('express');
 const router = express.Router(); // <--- CORRECT: Router initialized first
@@ -16,8 +14,43 @@ const passport = require('passport');
 const GitHubStrategy = require('passport-github2').Strategy;
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const axios = require('axios'); // <-- ADDED: For calling Python API
 
 const JWT_SECRET = process.env.JWT_SECRET || 'apex101_secret';
+
+// ---
+// --- ADDED: HELPER FUNCTIONS TO FIND USERS ACROSS COLLECTIONS ---
+// ---
+// This function finds a user by email in Student, Teacher, or Admin
+const findUserByEmail = async (email) => {
+    if (!email) return null;
+    const emailLower = email.toLowerCase();
+    let user = await models.Student.findOne({ email: emailLower });
+    if (user) return user;
+    user = await models.Teacher.findOne({ email: emailLower });
+    if (user) return user;
+    user = await models.Admin.findOne({ email: emailLower });
+    return user; // will be null if not found
+};
+
+// This function finds a user by ID in Student, Teacher, or Admin
+const findUserById = async (id) => {
+    if (!id) return null;
+    try {
+        let user = await models.Student.findById(id);
+        if (user) return user;
+        user = await models.Teacher.findById(id);
+        if (user) return user;
+        user = await models.Admin.findById(id);
+        return user;
+    } catch (err) {
+        console.error("Error finding user by ID:", err.message);
+        return null;
+    }
+};
+// ---
+// --- END HELPER FUNCTIONS ---
+// ---
 
 // 2. AUTH MIDDLEWARE (Must be defined before any routes that use it)
 function auth(req, res, next) {
@@ -53,6 +86,8 @@ router.put('/teachers/:id/active', auth, async (req, res) => {
     try {
         if (req.user.userType !== 'Admin') return res.status(403).json({ error: 'Forbidden' });
         const { active } = req.body;
+        // FIXED: Your Tutor model is likely 'Teacher' based on login, but 'Tutor' in models.js
+        // Let's use 'Tutor' as defined in your models.js
         const teacher = await models.Tutor.findByIdAndUpdate(req.params.id, { active }, { new: true });
         if (!teacher) return res.status(404).json({ error: 'Teacher not found' });
         res.json({ message: `Teacher ${active ? 'enabled' : 'disabled'}` });
@@ -73,6 +108,7 @@ router.get('/teachers', auth, async (req, res) => {
             // Optionally filter public teachers, e.g., only active ones
             // query = { status: 'active' };
         }
+        // FIXED: Using 'Tutor' model
         const teachers = await models.Tutor.find(query, projection);
         res.json(teachers);
     } catch (err) {
@@ -149,7 +185,8 @@ router.put('/about', auth, async (req, res) => {
 router.post('/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
-        const user = await models.User.findOne({ email });
+        // FIXED: Use helper function
+        const user = await findUserByEmail(email); 
         if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
         const token = crypto.randomBytes(32).toString('hex');
@@ -190,10 +227,14 @@ router.post('/new-password/:token', async (req, res) => {
         const { password, confirmPassword } = req.body;
         if (password !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match' });
 
-        const user = await models.User.findOne({
-            reset_token: token,
-            reset_expiry: { $gt: new Date() }
-        });
+        // FIXED: Need to search all 3 user models for the token
+        let user = await models.Student.findOne({ reset_token: token, reset_expiry: { $gt: new Date() } });
+        if (!user) {
+            user = await models.Teacher.findOne({ reset_token: token, reset_expiry: { $gt: new Date() } });
+        }
+        if (!user) {
+            user = await models.Admin.findOne({ reset_token: token, reset_expiry: { $gt: new Date() } });
+        }
         if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
 
         user.password = await bcrypt.hash(password, 10);
@@ -219,22 +260,30 @@ router.post('/auth/google', async (req, res) => {
         const payload = ticket.getPayload();
         const { sub: googleId, email, name, picture } = payload;
 
-        let user = await models.User.findOne({ googleId });
+        // FIXED: Use helper function
+        let user = await findUserByEmail(email); 
         if (!user) {
-            user = await models.User.findOne({ email }) || new models.User({
-                googleId, email, name, image: picture, isGoogleAuth: true
+            // Default to creating a new Student
+            user = new models.Student({
+                googleId, email, name, image: picture, isGoogleAuth: true, password: crypto.randomBytes(20).toString('hex') // Add random password
             });
-            user.googleId = googleId;
-            user.name = name;
-            user.image = picture;
-            user.isGoogleAuth = true;
-            await user.save();
         }
+        
+        user.googleId = googleId;
+        user.name = name;
+        user.image = picture;
+        user.isGoogleAuth = true;
+        await user.save();
+        
+        // Determine userType
+        let userType = 'Student'; // Default
+        if (user instanceof models.Teacher) userType = 'Teacher';
+        if (user instanceof models.Admin) userType = 'Admin';
 
-        const jwtToken = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '1d' });
+        const jwtToken = jwt.sign({ id: user._id, email: user.email, userType }, JWT_SECRET, { expiresIn: '1d' });
         res.json({
             token: jwtToken,
-            user: { id: user._id, name: user.name, email: user.email, image: user.image },
+            user: { id: user._id, name: user.name, email: user.email, image: user.image, userType },
             require2fa: false
         });
     } catch (err) {
@@ -250,27 +299,38 @@ passport.use(new GitHubStrategy({
     callbackURL: '/api/auth/github/callback'
 }, async (accessToken, refreshToken, profile, done) => {
     try {
-        let user = await models.User.findOne({ githubId: profile.id });
+        const githubId = profile.id;
+        const email = profile.emails?.[0]?.value || `${profile.username}@github.com`;
+        
+        let user = await models.Student.findOne({ githubId }); // Check Student
+        if (!user) user = await models.Teacher.findOne({ githubId }); // Check Teacher
+        if (!user) user = await models.Admin.findOne({ githubId }); // Check Admin
+
         if (!user) {
-            user = await models.User.findOne({ email: profile.emails?.[0]?.value });
+            user = await findUserByEmail(email); // Check by email
             if (user) {
-                user.githubId = profile.id;
-                user.name = profile.displayName || profile.username;
-                user.image = profile.photos?.[0]?.value || '';
+                user.githubId = githubId;
                 user.isGithubAuth = true;
             } else {
-                user = new models.User({
-                    githubId: profile.id,
+                // Default to creating new Student
+                user = new models.Student({
+                    githubId,
                     name: profile.displayName || profile.username,
-                    email: profile.emails?.[0]?.value || `${profile.username}@github.com`,
+                    email: email,
                     image: profile.photos?.[0]?.value || '',
-                    isGithubAuth: true
+                    isGithubAuth: true,
+                    password: crypto.randomBytes(20).toString('hex') // Add random password
                 });
             }
             await user.save();
         }
-        const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '1d' });
-        done(null, { token, user: { id: user._id, name: user.name, email: user.email, image: user.image } });
+
+        let userType = 'Student'; // Default
+        if (user instanceof models.Teacher) userType = 'Teacher';
+        if (user instanceof models.Admin) userType = 'Admin';
+
+        const token = jwt.sign({ id: user._id, email: user.email, userType }, JWT_SECRET, { expiresIn: '1d' });
+        done(null, { token, user: { id: user._id, name: user.name, email: user.email, image: user.image, userType } });
     } catch (err) {
         done(err, null);
     }
@@ -291,22 +351,51 @@ router.post('/register', upload.single('image'), async (req, res) => {
     try {
         const { name, email, password, userType } = req.body;
         const image = req.file ? req.file.filename : '';
-        console.log(`Registering as ${userType}: ${email}`);
-        if (!['Student', 'Teacher'].includes(userType))
+        console.log(`Registering as:`, userType, 'Email:', email);
+        if (!['Student', 'Teacher'].includes(userType)) {
+            console.log('Invalid userType:', userType);
             return res.status(400).json({ error: 'Invalid user type' });
+        }
 
-        const Model = userType === 'Student' ? models.Student : models.Teacher;
-        const existing = await Model.findOne({ email: email.toLowerCase() });
-        if (existing) return res.status(400).json({ error: 'Email already exists' });
+        // Explicit Teacher registration handling
+        if (userType === 'Teacher') {
+            // Check for required fields
+            if (!name || !email || !password) {
+                console.log('Missing required field for Teacher:', { name, email, password });
+                return res.status(400).json({ error: 'Missing required field for Teacher registration' });
+            }
+            const existing = await models.Teacher.findOne({ email: email.toLowerCase() });
+            if (existing) {
+                console.log('Teacher email already exists:', email);
+                return res.status(400).json({ error: 'Email already exists' });
+            }
+            const hash = await bcrypt.hash(password, 10);
+            const teacher = new models.Teacher({ name, email: email.toLowerCase(), password: hash, image });
+            await teacher.save();
+            console.log('Teacher registered:', email);
+            return res.status(201).json({ message: 'User registered' });
+        }
 
-        const hash = await bcrypt.hash(password, 10);
-        const userDoc = new Model({ name, email: email.toLowerCase(), password: hash, image });
-        await userDoc.save();
-
-        res.status(201).json({ message: 'User registered' });
+        // Student registration
+        if (userType === 'Student') {
+            if (!name || !email || !password) {
+                console.log('Missing required field for Student:', { name, email, password });
+                return res.status(400).json({ error: 'Missing required field for Student registration' });
+            }
+            const existing = await models.Student.findOne({ email: email.toLowerCase() });
+            if (existing) {
+                console.log('Student email already exists:', email);
+                return res.status(400).json({ error: 'Email already exists' });
+            }
+            const hash = await bcrypt.hash(password, 10);
+            const student = new models.Student({ name, email: email.toLowerCase(), password: hash, image });
+            await student.save();
+            console.log('Student registered:', email);
+            return res.status(201).json({ message: 'User registered' });
+        }
     } catch (err) {
         console.error('Register error:', err);
-        res.status(500).json({ error: 'Server error' });
+        res.status(500).json({ error: err.message || 'Server error' });
     }
 });
 
@@ -322,6 +411,7 @@ router.post('/login', async (req, res) => {
         else if (userType === 'Admin') Model = models.Admin;
         else return res.status(400).json({ error: 'Invalid user type' });
 
+        // FIXED: Use findOne with lowercase email
         const user = await Model.findOne({ email: email.toLowerCase() });
         if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
@@ -338,6 +428,73 @@ router.post('/login', async (req, res) => {
 
 
 // --- Protected Routes ---
+// --- Profile Edit ---
+router.put('/profile', auth, upload.single('image'), async (req, res) => {
+    const { name, password, confirmPassword } = req.body;
+    const imageFile = req.file;
+    const { id, email, userType } = req.user;
+    console.log(`Updating profile for ${userType}: ${email}`);
+
+    let Model;
+    if (userType === 'Student') Model = models.Student;
+    else if (userType === 'Teacher') Model = models.Teacher;
+    else if (userType === 'Admin') Model = models.Admin;
+    else return res.status(400).json({ error: 'Invalid user type' });
+
+    let updateFields = {};
+    if (imageFile) {
+        updateFields.image = imageFile.filename;
+    }
+
+    if (userType === 'Student' || userType === 'Teacher') {
+        if (name) updateFields.name = name;
+        if (password) {
+            if (!confirmPassword || password !== confirmPassword) {
+                return res.status(400).json({ error: 'Passwords do not match' });
+            }
+            updateFields.password = await bcrypt.hash(password, 10);
+        }
+    } else if (userType === 'Admin') {
+        // Admin can only update image and password
+        if (password) {
+            if (!confirmPassword || password !== confirmPassword) {
+                return res.status(400).json({ error: 'Passwords do not match' });
+            }
+            updateFields.password = await bcrypt.hash(password, 10);
+        }
+    }
+
+    try {
+        const user = await Model.findByIdAndUpdate(id, updateFields, { new: true });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        res.status(200).json({ message: 'Profile updated', user: { id: user._id, name: user.name, email: user.email, image: user.image, userType } });
+    } catch (err) {
+        console.error('Profile update error:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// --- Account Deletion ---
+router.delete('/profile', auth, async (req, res) => {
+    const { id, email, userType } = req.user;
+    console.log(`Account deletion requested for ${userType}: ${email}`);
+    let Model;
+    if (userType === 'Student') Model = models.Student;
+    else if (userType === 'Teacher') Model = models.Teacher;
+    else if (userType === 'Admin') {
+        return res.status(403).json({ error: 'Admins cannot delete their account' });
+    } else {
+        return res.status(400).json({ error: 'Invalid user type' });
+    }
+    try {
+        const result = await Model.findByIdAndDelete(id);
+        if (!result) return res.status(404).json({ error: 'User not found' });
+        res.status(200).json({ message: 'Account deleted' });
+    } catch (err) {
+        console.error('Account deletion error:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
 router.get('/courses', auth, async (req, res) => {
     try {
         const userType = req.user.userType;
@@ -350,13 +507,187 @@ router.get('/courses', auth, async (req, res) => {
 });
 
 router.get('/profile', auth, async (req, res) => {
-    const user = await models.User.findById(req.user.id);
+    // FIXED: Use helper function
+    const user = await findUserById(req.user.id); 
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ id: user._id, name: user.name, email: user.email, image: user.image });
+    res.json({ id: user._id, name: user.name, email: user.email, image: user.image, userType: req.user.userType });
 });
 
 // --- Test route ---
 router.get('/test', (req, res) => res.send('Router is working'));
+
+// ---
+// ---
+// --- NEW ADAPTIVE LEARNING ROUTES ADDED BELOW ---
+// ---
+// ---
+
+// --- Course Creation Route ---
+router.post('/courses/create', auth, upload.single('thumb'), async (req, res) => {
+    try {
+        if (req.user.userType !== 'Admin') {
+            return res.status(403).json({ error: 'Only admins can create courses' });
+        }
+        const { title, description } = req.body;
+        const thumb = req.file ? req.file.filename : '';
+        if (!title || !description) {
+            return res.status(400).json({ error: 'Title and description are required' });
+        }
+        const newCourse = new models.Playlist({
+            title,
+            description,
+            thumb
+        });
+        await newCourse.save();
+        res.status(201).json({ message: 'Course created', course: newCourse });
+    } catch (err) {
+        console.error('Course creation error:', err);
+        res.status(500).json({ error: 'Failed to create course' });
+    }
+});
+
+/**
+ * Helper function to calculate average time for a subset of interactions
+ */
+const calculateAverageTime = (interactions, filterFn) => {
+    const items = interactions.filter(filterFn);
+    if (items.length === 0) return 0;
+    const total_time = items.reduce((sum, item) => sum + item.timeSpentSeconds, 0);
+    return total_time / items.length;
+};
+
+/**
+ * Helper function to calculate the sequential access ratio
+ */
+const calculateSequentialRatio = (interactions) => {
+    // Filter for interactions that are part of a sequence (have an 'order' property)
+    const orderedInteractions = interactions
+        .filter(i => i.annotations && typeof i.annotations.order === 'number')
+        .sort((a, b) => a.timestamp - b.timestamp); // Sort by time
+
+    if (orderedInteractions.length < 2) return 0; // Not enough data
+
+    let sequential_accesses = 0;
+    let total_possible_transitions = orderedInteractions.length - 1;
+
+    for (let i = 0; i < total_possible_transitions; i++) {
+        const current = orderedInteractions[i];
+        const next = orderedInteractions[i+1];
+        
+        // Check if the next item is the *correct* next item in the sequence
+        if (next.annotations.order === current.annotations.order + 1) {
+            sequential_accesses++;
+        }
+    }
+
+    return sequential_accesses / total_possible_transitions;
+};
+
+/**
+ * ROUTE 1: Track User Behavior
+ * Your frontend will call this when a user finishes interacting with content.
+ * URL: POST /api/track
+ */
+router.post('/track', auth, async (req, res) => {
+    try {
+        const { contentObject, timeSpentSeconds } = req.body;
+        const userId = req.user.id; // From auth middleware
+
+        if (!contentObject || typeof timeSpentSeconds === 'undefined') {
+            return res.status(400).json({ error: 'Missing contentObject or timeSpentSeconds' });
+        }
+
+        const newInteraction = new models.Interaction({
+            user_id: userId,
+            content_id: contentObject.id, // Your schema uses 'id'
+            playlist_id: contentObject.playlist_id,
+            
+            // Copy the annotations and order at the time of interaction
+            annotations: {
+                format: contentObject.annotations.format,
+                type: contentObject.annotations.type,
+                category: contentObject.annotations.category,
+                order: contentObject.order // From your updated model
+            },
+
+            timeSpentSeconds: timeSpentSeconds
+        });
+
+        await newInteraction.save();
+        res.status(201).json({ message: 'Interaction saved' });
+
+    } catch (err) {
+        console.error('Tracking error:', err);
+        res.status(500).json({ error: 'Server error while tracking' });
+    }
+});
+
+
+/**
+ * ROUTE 2: Calculate Features & Trigger Prediction
+ * Your frontend will call this after a user finishes a playlist/module.
+ * URL: POST /api/predict-style/:playlistId
+ */
+router.post('/predict-style/:playlistId', auth, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { playlistId } = req.params;
+
+        // 1. Get user (for saving)
+        const user = await findUserById(userId);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        // 2. Get all interactions for this user and this specific playlist
+        const interactions = await models.Interaction.find({ 
+            user_id: userId, 
+            playlist_id: playlistId 
+        });
+
+        if (interactions.length < 5) { // Not enough data to predict
+            return res.status(400).json({ error: 'Not enough interaction data for a prediction.' });
+        }
+
+        // 3. --- FEATURE ENGINEERING ---
+        // Calculate the 11 features for the Python model
+        const featureVector = {
+            example_access_count: interactions.filter(i => i.annotations.category === 'Example').length,
+            avg_time_on_concrete_lo: calculateAverageTime(interactions, i => i.annotations.type === 'Concrete'),
+            avg_time_on_abstract_lo: calculateAverageTime(interactions, i => i.annotations.type === 'Abstract'),
+            avg_time_on_quiz: calculateAverageTime(interactions, i => i.annotations.category === 'Quiz'),
+            avg_time_on_visual_lo: calculateAverageTime(interactions, i => i.annotations.format === 'Visual'),
+            avg_time_on_verbal_lo: calculateAverageTime(interactions, i => i.annotations.format === 'Verbal'),
+            exercise_access_count: interactions.filter(i => i.annotations.category === 'Exercise').length,
+            avg_time_on_examples: calculateAverageTime(interactions, i => i.annotations.category === 'Example'),
+            sequential_access_ratio: calculateSequentialRatio(interactions),
+            outline_access_count: interactions.filter(i => i.annotations.category === 'Outline').length,
+            concept_map_access_count: interactions.filter(i => i.annotations.category === 'Concept Map').length
+        };
+
+        // 4. --- CALL PYTHON ML API ---
+        const pythonApiUrl = process.env.ML_API_URL || 'http://localhost:5001/predict';
+        let predictions;
+        
+        try {
+            const response = await axios.post(pythonApiUrl, featureVector);
+            predictions = response.data;
+        } catch (err) {
+            console.error("Error calling Python API:", err.message);
+            return res.status(500).send('Prediction server error');
+        }
+
+        // 5. --- SAVE PREDICTIONS TO USER ---
+        user.learningStyle = predictions;
+        user.featureVector = featureVector; // Save for debugging
+        await user.save();
+
+        res.json(predictions); // Send the new style back to the frontend
+
+    } catch (err) {
+        console.error('Prediction route error:', err);
+        res.status(500).json({ error: 'Server error during prediction' });
+    }
+});
+
 
 // 5. MODULE EXPORT
 module.exports = router;

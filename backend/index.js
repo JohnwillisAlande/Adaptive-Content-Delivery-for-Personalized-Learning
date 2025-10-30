@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -21,20 +22,30 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
     console.log('MongoDB connected');
     // Dev seeding for test user
     if (process.env.NODE_ENV === 'development') {
-      const { User } = require('./models');
+      // FIXED: Your models.js doesn't export a single 'User'
+      // This seeding logic will fail. You should seed a 'Student' instead.
+      const { Student } = require('./models'); 
       const bcrypt = require('bcryptjs');
-      await User.findOneAndUpdate(
+      await Student.findOneAndUpdate(
         { email: 'jaykayalma@gmail.com' },
-        { name: 'Jay Kay Alma', email: 'jaykayalma@gmail.com', password: bcrypt.hashSync('testpass', 10), image: 'pic-2.jpg', reset_token: null, reset_expiry: null },
+        { 
+          name: 'Jay Kay Alma', 
+          email: 'jaykayalma@gmail.com', 
+          password: bcrypt.hashSync('testpass', 10), 
+          image: 'pic-2.jpg', 
+          reset_token: null, 
+          reset_expiry: null 
+        },
         { upsert: true, new: true }
       );
-      console.log('Test user (jaykayalma@gmail.com) ensured');
+      console.log('Test student (jaykayalma@gmail.com) ensured');
     }
   })
   .catch(err => console.error('MongoDB connection error:', err));
 
-app.use('/api', require('./auth'));
+app.use('/uploaded_files', express.static(path.join(__dirname, '../uploaded_files')));
 app.use('/api/courses', require('./courses'));
+app.use('/api', require('./auth'));
 
 app.get('/', (req, res) => {
   res.send('Apex101 MERN backend running');

@@ -1,13 +1,12 @@
 // Mirrors forgot_password.php email submission
 import React, { useState } from 'react';
 import axios from 'axios';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 function ForgotPassword() {
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const navigate = useNavigate();
 
   const handleSubmit = async e => {
     e.preventDefault();
@@ -30,51 +29,44 @@ function ForgotPassword() {
   };
 
   return (
-    <div className="main-content" style={{ minHeight: '80vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <section className="form-screen form-screen--plain">
       <form
-        className="forgot-password-form"
+        className="form-card"
         onSubmit={handleSubmit}
         autoComplete="off"
-        style={{
-          background: 'var(--white)',
-          borderRadius: '.5rem',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-          padding: '2.5rem 2.5rem 2rem 2.5rem',
-          width: '100%',
-          maxWidth: '400px',
-          margin: '0 auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '1.2rem',
-        }}
       >
-        <h3 style={{ textAlign: 'center', fontWeight: 700, fontSize: '2rem', color: '#fff', background: 'var(--main-color)', padding: '1rem', borderRadius: '.5rem' }}>Forgot Password?</h3>
-        <label style={{ fontSize: '1.1rem', color: 'var(--black)', fontWeight: 500, marginBottom: '.2rem', display: 'block' }}>
-          Email Address
-        </label>
-        <input
-          type="email"
-          name="email"
-          placeholder="Enter your email"
-          required
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          style={{ border: '1px solid #4a5568', borderRadius: '4px', outline: 'none', background: 'var(--light-bg)', color: 'var(--black)', width: '100%', boxSizing: 'border-box', padding: '1rem', fontSize: '1.1rem', marginBottom: '1rem' }}
-        />
-        {error && <div className="error" style={{ color: 'var(--red)', fontSize: '1rem', marginBottom: '.5rem', textAlign: 'center' }}>{error}</div>}
-        {success && <div className="success" style={{ color: 'var(--main-color)', fontSize: '1rem', marginBottom: '.5rem', textAlign: 'center' }}>{success}</div>}
-        <button
-          type="submit"
-          className="btn"
-          style={{ background: '#00a085', color: '#fff', borderRadius: '.5rem', fontWeight: 700, fontSize: '1.1rem', width: '100%', padding: '1rem', marginTop: '.5rem' }}
-        >
-          Send Reset Link
-        </button>
-        <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-          <Link to="/login" style={{ color: '#00a085', textDecoration: 'underline', fontWeight: 600 }}>Back to Login</Link>
+        <h2 className="form-card__title">Forgot password?</h2>
+        <p className="form-card__subtitle">Enter the email linked to your account and we&apos;ll send you a secure reset link.</p>
+
+        <div>
+          <label htmlFor="forgot-email">
+            Email address <span className="required-indicator">*</span>
+          </label>
+          <input
+            id="forgot-email"
+            type="email"
+            name="email"
+            placeholder="Enter your email"
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+          />
+        </div>
+
+        {error && <div className="form-message error">{error}</div>}
+        {success && <div className="form-message success">{success}</div>}
+
+        <div className="form-actions">
+          <button type="submit" className="btn">
+            Send reset link
+          </button>
+        </div>
+
+        <div className="form-link">
+          <Link to="/login">Back to login</Link>
         </div>
       </form>
-    </div>
+    </section>
   );
 }
 

@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { FaBook, FaCalculator, FaGlobeAfrica, FaLeaf, FaAppleAlt, FaPray, FaPaintBrush, FaArrowRight, FaTh, FaList, FaStar, FaClock, FaPlay } from 'react-icons/fa';
+import { useNavigate } from 'react-router-dom';
+import { FaBook, FaCalculator, FaGlobeAfrica, FaLeaf, FaAppleAlt, FaPray, FaPaintBrush } from 'react-icons/fa';
 import { toast } from 'react-toastify';
-import { jwtDecode } from 'jwt-decode';
+import { useAuth } from './context/AuthContext';
+import api from './api';
+
+const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
 
 const COURSE_LIST = [
   {
@@ -103,104 +106,91 @@ function Courses() {
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
-  const [viewMode, setViewMode] = useState('grid');
   const [enrolledCourses, setEnrolledCourses] = useState(new Set());
-  const [hoveredCourse, setHoveredCourse] = useState(null);
   const navigate = useNavigate();
-  const [userType, setUserType] = useState(null);
+  const { user, isAuthenticated, initializing } = useAuth();
+
+  const userType = user?.userType || null;
 
   useEffect(() => {
-    // Decode JWT to get userType
-    const token = localStorage.getItem('token');
-    if (token) {
-      try {
-  const decoded = jwtDecode(token);
-        setUserType(decoded.userType);
-      } catch (err) {
-        setUserType(null);
-      }
-    }
-    // Fetch courses for non-admins
-    if (!token || userType !== 'Admin') {
-      const fetchData = async () => {
-        try {
-          const coursesRes = await fetch('/api/courses', {
-            headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-          });
-          if (coursesRes.ok) {
-            const coursesData = await coursesRes.json();
-            const enrichedCourses = COURSE_LIST.map(localCourse => {
-              const backendCourse = coursesData.find(bc => bc.id === localCourse.id);
-              return { 
-                ...localCourse, 
-                ...(backendCourse || {}),
-                isEnrolled: backendCourse?.isEnrolled || false
-              };
-            });
-            setCourses(enrichedCourses);
-            const enrolled = enrichedCourses
-              .filter(c => c.isEnrolled)
-              .map(c => c.id);
-            setEnrolledCourses(new Set(enrolled));
-          } else {
-            setCourses(COURSE_LIST);
-          }
-        } catch (err) {
-          setCourses(COURSE_LIST);
-        } finally {
-          setLoading(false);
-        }
-      };
-      fetchData();
-    } else {
+    if (initializing) return;
+
+    if (userType === 'Admin') {
       setLoading(false);
+      return;
     }
-  }, [userType]);
+
+    let active = true;
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get('/courses');
+        if (!active) return;
+        const resolvedCourses = data && data.length ? data : COURSE_LIST;
+        setCourses(resolvedCourses);
+        const enrolled = (data || [])
+          .filter(course => course.isEnrolled)
+          .map(course => course.id);
+        setEnrolledCourses(new Set(enrolled));
+      } catch (err) {
+        if (!active) return;
+        toast.error(err.response?.data?.error || 'Failed to fetch courses');
+        setCourses(COURSE_LIST);
+        setEnrolledCourses(new Set());
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    fetchData();
+    return () => { active = false; };
+  }, [initializing, userType]);
 
   const filteredCourses = useMemo(() => {
-    let filtered = [...courses];
-    
-    if (activeTab === 'my') {
-      filtered = courses.filter(c => enrolledCourses.has(c.id));
-    } else if (activeTab === 'featured') {
-      filtered = courses.filter(c => c.featured);
+    switch (activeTab) {
+      case 'featured':
+        return courses.filter(c => c.featured);
+      case 'enrolled':
+        return courses.filter(c => enrolledCourses.has(c.id));
+      default:
+        return courses;
     }
-    
-    return filtered;
   }, [courses, activeTab, enrolledCourses]);
+
+  const resolveThumb = (course) => {
+    if (course.thumb) {
+      if (course.thumb.startsWith('http')) return course.thumb;
+      return `${FILE_BASE_URL}/uploaded_files/${course.thumb}`;
+    }
+    return course.backgroundImage || 'https://via.placeholder.com/640x360/111827/ffffff?text=Course';
+  };
+
+  const handleCardClick = (courseId) => {
+    if (!courseId) return;
+    navigate(`/courses/${courseId}`);
+  };
 
   const handleEnroll = async (courseId, e) => {
     e.preventDefault();
     e.stopPropagation();
     
-    const token = localStorage.getItem('token');
-    if (!token) {
+    if (!isAuthenticated) {
       toast.error('Please login to enroll');
       navigate('/login');
       return;
     }
 
     try {
-      const res = await fetch(`/api/courses/enroll/${courseId}`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      
-      if (res.ok) {
-        setEnrolledCourses(prev => new Set([...prev, courseId]));
-        setCourses(prevCourses => 
-          prevCourses.map(c => 
-            c.id === courseId ? { ...c, isEnrolled: true } : c
-          )
-        );
-        toast.success('Successfully enrolled!');
-      } else {
-        const data = await res.json();
-        toast.error(data.error || 'Enrollment failed');
-      }
+      await api.post(`/courses/enroll/${courseId}`);
+      setEnrolledCourses(prev => new Set([...prev, courseId]));
+      setCourses(prevCourses => 
+        prevCourses.map(c => 
+          c.id === courseId ? { ...c, isEnrolled: true } : c
+        )
+      );
+      toast.success('Successfully enrolled!');
     } catch (err) {
-      console.error('Enrollment error:', err);
-      toast.error('Enrollment failed. Please try again.');
+      toast.error(err.response?.data?.error || 'Enrollment failed. Please try again.');
     }
   };
 
@@ -215,30 +205,30 @@ function Courses() {
       </div>
     );
   }
+  // Teacher quick access view
 
-  // Admin view: show two prominent buttons
-  if (userType === 'Admin') {
+  if (userType === 'Teacher') {
     return (
       <div className="min-h-screen bg-[#0f1117] text-white flex flex-col items-center justify-center">
         <div className="w-full max-w-xl mx-auto flex flex-col md:flex-row gap-6 md:gap-10 items-center justify-center py-20">
           <button
-            onClick={() => navigate('/courses/create')}
+            onClick={() => navigate('/teacher/courses')}
             className="flex-1 px-8 py-6 rounded-2xl bg-teal-600 text-white text-2xl font-bold shadow-lg hover:bg-teal-700 transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-teal-400"
             style={{ minWidth: 220 }}
           >
-            Create New Course
+            Manage My Courses
           </button>
           <button
-            onClick={() => navigate('/courses/modify')}
+            onClick={() => navigate('/teacher/materials')}
             className="flex-1 px-8 py-6 rounded-2xl bg-teal-600 text-white text-2xl font-bold shadow-lg hover:bg-teal-700 transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-teal-400"
             style={{ minWidth: 220 }}
           >
-            Modify Course Material
+            Upload Material
           </button>
         </div>
-        <style>{`
+      <style>{`
           @media (max-width: 768px) {
-            .flex-col.md\:flex-row {
+            .flex-col.md\\:flex-row {
               flex-direction: column !important;
             }
           }
@@ -247,10 +237,83 @@ function Courses() {
     );
   }
 
-  // ...existing code for non-admins (course grid)...
   return (
-    <div className="min-h-screen bg-[#0f1117] text-white">
-      {/* ...existing code for tabs, grid, etc... */}
+    <div className="main-content">
+      <h1 className="heading">Courses</h1>
+      {userType !== 'Teacher' && (
+        <div className="flex flex-wrap gap-3 mb-6">
+          <button
+            className={`option-btn${activeTab === 'all' ? ' active' : ''}`}
+            onClick={() => setActiveTab('all')}
+          >
+            All
+          </button>
+          <button
+            className={`option-btn${activeTab === 'featured' ? ' active' : ''}`}
+            onClick={() => setActiveTab('featured')}
+          >
+            Featured
+          </button>
+          <button
+            className={`option-btn${activeTab === 'enrolled' ? ' active' : ''}`}
+            onClick={() => setActiveTab('enrolled')}
+          >
+            Enrolled
+          </button>
+        </div>
+      )}
+      <div className="box-container">
+        {filteredCourses.length === 0 ? (
+          <div className="empty">No courses found.</div>
+        ) : (
+          filteredCourses.map(course => {
+            const isEnrolled = enrolledCourses.has(course.id);
+            return (
+              <div
+                className="box"
+                key={course.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => handleCardClick(course.id)}
+                onKeyPress={(event) => {
+                  if (event.key === 'Enter') handleCardClick(course.id);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                <div className="relative mb-4">
+                  <img
+                    src={resolveThumb(course)}
+                    alt={course.name}
+                    className="thumb"
+                    style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '0.75rem' }}
+                    loading="lazy"
+                  />
+                  {isEnrolled && (
+                    <span className="absolute top-3 left-3 bg-teal-500 text-white text-xs font-semibold px-3 py-1 rounded-full shadow">
+                      Enrolled
+                    </span>
+                  )}
+                </div>
+                <div className="title">{course.name}</div>
+                <div style={{ color: '#8892b0', marginBottom: '0.5rem' }}>{course.subtitle}</div>
+                <div style={{ marginBottom: '1rem', color: '#94a3b8' }}>{course.description}</div>
+                <div style={{ marginBottom: '1rem', fontSize: '0.95rem', color: '#14b8a6' }}>
+                  {course.lessons} lessons &bull; {course.duration || 'Self-paced'}
+                </div>
+                <button
+                  className={`inline-btn${isEnrolled ? ' tutor' : ''}`}
+                  onClick={e => handleEnroll(course.id, e)}
+                  aria-label={`Enroll in ${course.name}`}
+                  disabled={isEnrolled}
+                  style={{ marginTop: 'auto' }}
+                >
+                  {isEnrolled ? 'Enrolled' : 'Enroll'}
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
