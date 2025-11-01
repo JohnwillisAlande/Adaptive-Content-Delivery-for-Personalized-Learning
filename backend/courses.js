@@ -331,6 +331,7 @@ const formatMaterial = (doc) => ({
   id: doc.id,
   title: doc.title,
   description: doc.description,
+  status: doc.status,
   video: doc.video,
   videoUrl: toPublicPath(doc.video),
   thumb: doc.thumb,
@@ -372,6 +373,24 @@ const formatCourseForTeacher = (course, options = {}) => {
 const FORMAT_OPTIONS = ['Visual', 'Verbal', 'Audio'];
 const TYPE_OPTIONS = ['Abstract', 'Concrete'];
 const CATEGORY_OPTIONS = ['Video', 'Example', 'Exercise', 'Quiz', 'Reading', 'Outline', 'Concept Map', 'Audio', 'Flashcards', 'PDF'];
+const normalizeMaterialStatus = (value, fallback = 'active') => {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (['deactive', 'inactive', 'disabled', 'draft', 'hidden'].includes(normalized)) {
+    return 'deactive';
+  }
+  if (['active', 'enabled', 'live', 'published'].includes(normalized)) {
+    return 'active';
+  }
+  return fallback;
+};
+
+const visibleStatusFilter = {
+  $or: [
+    { status: { $exists: false } },
+    { status: { $ne: 'deactive' } }
+  ]
+};
 
 const getTeacherContext = async (req, res) => {
   const ctx = await getRequestContext(req);
@@ -686,12 +705,15 @@ router.post('/teacher/:courseId/materials', materialUpload, async (req, res) => 
       }
     }
 
+    const status = normalizeMaterialStatus(req.body.status, 'active');
+
     const content = new Content({
       id: new mongoose.Types.ObjectId().toString(),
       playlist_id: playlistKey,
       tutor_id: ctx.user._id.toString(),
       title,
       description,
+      status,
       video: resolvedVideo,
       thumb: thumbFile.filename,
       order: numericOrder,
@@ -706,7 +728,7 @@ router.post('/teacher/:courseId/materials', materialUpload, async (req, res) => 
     });
     await content.save();
 
-    course.lessons = await Content.countDocuments({ playlist_id: playlistKey });
+    course.lessons = await Content.countDocuments({ playlist_id: playlistKey, ...visibleStatusFilter });
     await course.save();
 
     res.status(201).json(formatMaterial(content));
@@ -736,7 +758,8 @@ router.put('/teacher/:courseId/materials/:materialId', materialUpload, async (re
     videoUrl,
     textContent,
     fileUrl: fileUrlBody,
-    quizData
+    quizData,
+    status
   } = req.body;
 
   try {
@@ -794,6 +817,10 @@ router.put('/teacher/:courseId/materials/:materialId', materialUpload, async (re
         return res.status(400).json({ error: 'Invalid content category selection' });
       }
       material.annotations.category = category;
+    }
+
+    if (status !== undefined) {
+      material.status = normalizeMaterialStatus(status, material.status || 'active');
     }
 
     const targetCategory = material.annotations?.category || 'Video';
@@ -854,7 +881,7 @@ router.put('/teacher/:courseId/materials/:materialId', materialUpload, async (re
     }
 
     await material.save();
-    course.lessons = await Content.countDocuments({ playlist_id: playlistKey });
+    course.lessons = await Content.countDocuments({ playlist_id: playlistKey, ...visibleStatusFilter });
     await course.save();
     res.json(formatMaterial(material));
   } catch (err) {
@@ -1002,7 +1029,11 @@ router.get('/:courseId/materials/:materialId', async (req, res) => {
       return res.status(403).json({ error: 'Enroll in this course to access materials' });
     }
 
-    const storedCourse = await Course.findOne({ $or: [{ id: courseId }, { _id: courseId }] }).lean();
+    const courseLookup = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      courseLookup.push({ _id: courseId });
+    }
+    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
     const materialQuery = [{ id: materialId }];
     if (mongoose.Types.ObjectId.isValid(materialId)) {
       materialQuery.push({ _id: materialId });
@@ -1011,8 +1042,10 @@ router.get('/:courseId/materials/:materialId', async (req, res) => {
     const playlists = await Playlist.find({
       $or: [
         { id: courseId },
-        { _id: courseId },
-        storedCourse?.playlistId ? { _id: storedCourse.playlistId } : null
+        mongoose.Types.ObjectId.isValid(courseId) ? { _id: courseId } : null,
+        storedCourse?.playlistId && mongoose.Types.ObjectId.isValid(storedCourse.playlistId)
+          ? { _id: storedCourse.playlistId }
+          : null
       ].filter(Boolean)
     }).lean();
     const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
@@ -1026,12 +1059,18 @@ router.get('/:courseId/materials/:materialId', async (req, res) => {
       return res.status(404).json({ error: 'Material not found' });
     }
 
+    const materialStatus = normalizeMaterialStatus(material.status, 'active');
+    if (materialStatus !== 'active' && !(isTeacher || isAdmin)) {
+      return res.status(403).json({ error: 'This material is not currently available' });
+    }
+
     const formatted = formatMaterial(material);
     const courseSummary = buildCourseSummary(courseId, storedCourse);
     const response = {
       course: courseSummary,
       material: {
         ...formatted,
+        status: materialStatus,
         textContent: material.textContent || '',
         quizData: material.quizData || null,
         hasVideo: Boolean(formatted.videoUrl),
@@ -1066,7 +1105,11 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
       return res.status(403).json({ error: 'Enroll in this course to track progress' });
     }
 
-    const storedCourse = await Course.findOne({ $or: [{ id: courseId }, { _id: courseId }] }).lean();
+    const courseLookup = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      courseLookup.push({ _id: courseId });
+    }
+    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
     const materialQuery = [{ id: materialId }];
     if (mongoose.Types.ObjectId.isValid(materialId)) {
       materialQuery.push({ _id: materialId });
@@ -1074,8 +1117,10 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
     const playlists = await Playlist.find({
       $or: [
         { id: courseId },
-        { _id: courseId },
-        storedCourse?.playlistId ? { _id: storedCourse.playlistId } : null
+        mongoose.Types.ObjectId.isValid(courseId) ? { _id: courseId } : null,
+        storedCourse?.playlistId && mongoose.Types.ObjectId.isValid(storedCourse.playlistId)
+          ? { _id: storedCourse.playlistId }
+          : null
       ].filter(Boolean)
     }).lean();
     const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
@@ -1136,10 +1181,15 @@ router.get('/:courseId', async (req, res) => {
   const PAGE_SIZE = Math.max(parseInt(req.query.pageSize, 10) || 12, 1);
   const search = req.query.search || '';
   const activeCategory = req.query.category || 'All';
+  const activeFormat = req.query.format || 'All';
 
   try {
     const { user } = await getRequestContext(req);
-    const storedCourse = await Course.findOne({ $or: [{ id: courseId }, { _id: courseId }] }).lean();
+    const courseLookup = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      courseLookup.push({ _id: courseId });
+    }
+    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
     const courseSummary = buildCourseSummary(courseId, storedCourse);
 
     const isStudent = user?.constructor?.modelName === 'Student';
@@ -1165,12 +1215,14 @@ router.get('/:courseId', async (req, res) => {
       playlistKeys.push(courseId);
     }
 
-    const baseFilter = { playlist_id: { $in: playlistKeys } };
-    const materialsRaw = await Content.find({
-      ...baseFilter,
-      ...(search ? { title: { $regex: search, $options: 'i' } } : {})
-    }).sort({ order: 1, date: -1 }).lean();
-    const totalMaterialsCount = await Content.countDocuments(baseFilter);
+      const baseFilter = { playlist_id: { $in: playlistKeys } };
+      const visibilityFilter = { ...baseFilter, ...visibleStatusFilter };
+      const searchFilter = search ? { title: { $regex: search, $options: 'i' } } : {};
+      const materialsRaw = await Content.find({
+        ...visibilityFilter,
+        ...searchFilter
+      }).sort({ order: 1, date: -1 }).lean();
+      const totalMaterialsCount = await Content.countDocuments(visibilityFilter);
 
     const categoryCounts = materialsRaw.reduce((acc, mat) => {
       const category = mat.annotations?.category || 'Uncategorized';
@@ -1185,70 +1237,93 @@ router.get('/:courseId', async (req, res) => {
         .map(([key, count]) => ({ key, label: key, count }))
     ];
 
-    let filteredMaterials = materialsRaw;
-    if (activeCategory && activeCategory !== 'All') {
-      filteredMaterials = filteredMaterials.filter(mat =>
-        (mat.annotations?.category || 'Uncategorized') === activeCategory
-      );
-    }
+      let filteredMaterials = materialsRaw;
+      if (activeCategory && activeCategory !== 'All') {
+        filteredMaterials = filteredMaterials.filter(mat =>
+          (mat.annotations?.category || 'Uncategorized') === activeCategory
+        );
+      }
+      if (activeFormat && activeFormat !== 'All') {
+        const targetFormat = activeFormat.toLowerCase();
+        filteredMaterials = filteredMaterials.filter(mat => {
+          const sourceFormat = (mat.annotations?.format || '').toLowerCase();
+          if (!sourceFormat) return false;
+          if (targetFormat === 'audio') {
+            return ['audio', 'auditory', 'aural'].includes(sourceFormat);
+          }
+          return sourceFormat === targetFormat;
+        });
+      }
 
     let visibleItems = [...filteredMaterials];
     let hiddenItems = [];
-    const learningStyle = user?.learningStyle || null;
+    const learningStyle = isStudent ? user?.learningStyle : null;
 
     if (learningStyle) {
       if (learningStyle.is_verbal === 0) {
         visibleItems.sort((a, b) => {
-          if (a.annotations.format === 'Visual') return -1;
-          if (b.annotations.format === 'Visual') return 1;
+          const formatA = a.annotations?.format;
+          const formatB = b.annotations?.format;
+          if (formatA === 'Visual') return -1;
+          if (formatB === 'Visual') return 1;
           return 0;
         });
-        hiddenItems = visibleItems.filter(o => o.annotations.format === 'Verbal');
-        visibleItems = visibleItems.filter(o => o.annotations.format !== 'Verbal');
+        hiddenItems = visibleItems.filter(o => o.annotations?.format === 'Verbal');
+        visibleItems = visibleItems.filter(o => o.annotations?.format !== 'Verbal');
       } else {
         visibleItems.sort((a, b) => {
-          if (a.annotations.format === 'Verbal') return -1;
-          if (b.annotations.format === 'Verbal') return 1;
+          const formatA = a.annotations?.format;
+          const formatB = b.annotations?.format;
+          if (formatA === 'Verbal') return -1;
+          if (formatB === 'Verbal') return 1;
           return 0;
         });
-        hiddenItems = visibleItems.filter(o => o.annotations.format === 'Visual');
-        visibleItems = visibleItems.filter(o => o.annotations.format !== 'Visual');
+        hiddenItems = visibleItems.filter(o => o.annotations?.format === 'Visual');
+        visibleItems = visibleItems.filter(o => o.annotations?.format !== 'Visual');
       }
 
       if (learningStyle.is_intuitive === 0) {
         visibleItems.sort((a, b) => {
-          if (a.annotations.type === 'Concrete') return -1;
-          if (b.annotations.type === 'Concrete') return 1;
+          const typeA = a.annotations?.type;
+          const typeB = b.annotations?.type;
+          if (typeA === 'Concrete') return -1;
+          if (typeB === 'Concrete') return 1;
           return 0;
         });
       } else {
         visibleItems.sort((a, b) => {
-          if (a.annotations.type === 'Abstract') return -1;
-          if (b.annotations.type === 'Abstract') return 1;
+          const typeA = a.annotations?.type;
+          const typeB = b.annotations?.type;
+          if (typeA === 'Abstract') return -1;
+          if (typeB === 'Abstract') return 1;
           return 0;
         });
       }
 
       if (learningStyle.is_reflective === 0) {
         visibleItems.sort((a, b) => {
-          if (a.annotations.category === 'Exercise') return -1;
-          if (b.annotations.category === 'Exercise') return 1;
+          const categoryA = a.annotations?.category;
+          const categoryB = b.annotations?.category;
+          if (categoryA === 'Exercise') return -1;
+          if (categoryB === 'Exercise') return 1;
           return 0;
         });
-        const examples = visibleItems.filter(o => o.annotations.category === 'Example');
-        const nonExamples = visibleItems.filter(o => o.annotations.category !== 'Example');
+        const examples = visibleItems.filter(o => o.annotations?.category === 'Example');
+        const nonExamples = visibleItems.filter(o => o.annotations?.category !== 'Example');
         const examplesToHide = examples.slice(Math.floor(examples.length / 2));
         const examplesToShow = examples.slice(0, Math.floor(examples.length / 2));
         visibleItems = nonExamples.concat(examplesToShow);
         hiddenItems = hiddenItems.concat(examplesToHide);
       } else {
         visibleItems.sort((a, b) => {
-          if (a.annotations.category === 'Example') return -1;
-          if (b.annotations.category === 'Example') return 1;
+          const categoryA = a.annotations?.category;
+          const categoryB = b.annotations?.category;
+          if (categoryA === 'Example') return -1;
+          if (categoryB === 'Example') return 1;
           return 0;
         });
-        const exercises = visibleItems.filter(o => o.annotations.category === 'Exercise');
-        const nonExercises = visibleItems.filter(o => o.annotations.category !== 'Exercise');
+        const exercises = visibleItems.filter(o => o.annotations?.category === 'Exercise');
+        const nonExercises = visibleItems.filter(o => o.annotations?.category !== 'Exercise');
         const exercisesToHide = exercises.slice(Math.floor(exercises.length / 2));
         const exercisesToShow = exercises.slice(0, Math.floor(exercises.length / 2));
         visibleItems = nonExercises.concat(exercisesToShow);
@@ -1257,8 +1332,12 @@ router.get('/:courseId', async (req, res) => {
 
       if (learningStyle.is_global === 1) {
         visibleItems.sort((a, b) => {
-          if (a.annotations.category === 'Outline' || a.annotations.category === 'Concept Map') return -1;
-          if (b.annotations.category === 'Outline' || b.annotations.category === 'Concept Map') return 1;
+          const categoryA = a.annotations?.category;
+          const categoryB = b.annotations?.category;
+          const isOutlineA = categoryA === 'Outline' || categoryA === 'Concept Map';
+          const isOutlineB = categoryB === 'Outline' || categoryB === 'Concept Map';
+          if (isOutlineA) return -1;
+          if (isOutlineB) return 1;
           return 0;
         });
       }
@@ -1300,10 +1379,11 @@ router.get('/:courseId', async (req, res) => {
       materials,
       hiddenItems: mappedHiddenItems,
       playlists,
-      filters: {
-        categories,
-        activeCategory
-      },
+        filters: {
+          categories,
+          activeCategory,
+          activeFormat
+        },
       pagination: {
         page,
         pageSize: PAGE_SIZE,
@@ -1313,6 +1393,12 @@ router.get('/:courseId', async (req, res) => {
     });
   } catch (err) {
     console.error('Course materials fetch error:', err);
+    try {
+      const logLine = `[${new Date().toISOString()}] ${courseId}: ${err?.stack || err}\n`;
+      fs.appendFileSync(path.join(__dirname, 'course-material-errors.log'), logLine, 'utf8');
+    } catch (logErr) {
+      console.error('Failed to write course material error log:', logErr);
+    }
     res.status(500).json({ error: 'Failed to fetch course materials' });
   }
 });

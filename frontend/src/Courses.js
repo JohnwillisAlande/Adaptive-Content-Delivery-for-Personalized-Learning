@@ -7,6 +7,8 @@ import api from './api';
 
 const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
 
+const DEFAULT_THUMBNAIL = 'https://images.unsplash.com/photo-1503676382389-4809596c7f80?w=1200&q=80';
+
 const COURSE_LIST = [
   {
     id: 'english',
@@ -101,14 +103,62 @@ const COURSE_LIST = [
   },
 ];
 
+const resolveThumb = (course) => {
+  if (!course) return DEFAULT_THUMBNAIL;
+  if (course.thumbnail) return course.thumbnail;
+  if (course.thumb) return course.thumb;
+  if (course.backgroundImage) return course.backgroundImage;
+  return DEFAULT_THUMBNAIL;
+};
+
 function Courses() {
 
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [enrolledCourses, setEnrolledCourses] = useState(new Set());
+  const [navigatingCourseId, setNavigatingCourseId] = useState(null);
   const navigate = useNavigate();
   const { user, isAuthenticated, initializing } = useAuth();
+
+  const handleCourseClick = async (course) => {
+    const courseId = course?.id;
+    if (!courseId) return;
+
+    // Teachers have a dedicated dashboard - navigate directly there.
+    if (userType === 'Teacher') {
+      navigate('/teacher/courses');
+      return;
+    }
+
+    // Fallback path loads the course detail page (material list).
+    let targetPath = `/courses/${courseId}`;
+
+    // Only attempt to deep-link for authenticated students.
+    if (isAuthenticated && userType === 'Student') {
+      setNavigatingCourseId(courseId);
+      try {
+        const { data } = await api.get(`/courses/${courseId}`, {
+          params: { page: 1, pageSize: 1, format: 'All' }
+        });
+        const requiresEnrollment = Boolean(data?.enrollmentRequired);
+        const materials = Array.isArray(data?.materials) ? data.materials : [];
+        if (!requiresEnrollment && materials.length > 0) {
+          const firstMaterial = materials[0];
+          const materialId = firstMaterial?._id || firstMaterial?.id;
+          if (materialId) {
+            targetPath = `/courses/${courseId}/materials/${materialId}`;
+          }
+        }
+      } catch (err) {
+        // Silently fall back to course detail page
+      } finally {
+        setNavigatingCourseId(null);
+      }
+    }
+
+    navigate(targetPath);
+  };
 
   const userType = user?.userType || null;
 
@@ -155,31 +205,15 @@ function Courses() {
       default:
         return courses;
     }
-  }, [courses, activeTab, enrolledCourses]);
+  }, [activeTab, courses, enrolledCourses]);
 
-  const resolveThumb = (course) => {
-    if (course.thumb) {
-      if (course.thumb.startsWith('http')) return course.thumb;
-      return `${FILE_BASE_URL}/uploaded_files/${course.thumb}`;
-    }
-    return course.backgroundImage || 'https://via.placeholder.com/640x360/111827/ffffff?text=Course';
-  };
-
-  const handleCardClick = (courseId) => {
-    if (!courseId) return;
-    navigate(`/courses/${courseId}`);
-  };
-
-  const handleEnroll = async (courseId, e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
+  // Handler for enrolling in a course
+  const handleEnroll = async (courseId, event) => {
+    event?.stopPropagation();
     if (!isAuthenticated) {
-      toast.error('Please login to enroll');
       navigate('/login');
       return;
     }
-
     try {
       await api.post(`/courses/enroll/${courseId}`);
       setEnrolledCourses(prev => new Set([...prev, courseId]));
@@ -241,25 +275,10 @@ function Courses() {
     <div className="main-content">
       <h1 className="heading">Courses</h1>
       {userType !== 'Teacher' && (
-        <div className="flex flex-wrap gap-3 mb-6">
-          <button
-            className={`option-btn${activeTab === 'all' ? ' active' : ''}`}
-            onClick={() => setActiveTab('all')}
-          >
-            All
-          </button>
-          <button
-            className={`option-btn${activeTab === 'featured' ? ' active' : ''}`}
-            onClick={() => setActiveTab('featured')}
-          >
-            Featured
-          </button>
-          <button
-            className={`option-btn${activeTab === 'enrolled' ? ' active' : ''}`}
-            onClick={() => setActiveTab('enrolled')}
-          >
-            Enrolled
-          </button>
+        <div className="courses-nav">
+          <button className={`nav-btn${activeTab === 'all' ? ' active' : ''}`} onClick={() => setActiveTab('all')}>All</button>
+          <button className={`nav-btn${activeTab === 'featured' ? ' active' : ''}`} onClick={() => setActiveTab('featured')}>Featured</button>
+          <button className={`nav-btn${activeTab === 'enrolled' ? ' active' : ''}`} onClick={() => setActiveTab('enrolled')}>Enrolled</button>
         </div>
       )}
       <div className="box-container">
@@ -268,17 +287,19 @@ function Courses() {
         ) : (
           filteredCourses.map(course => {
             const isEnrolled = enrolledCourses.has(course.id);
+            const isNavigating = navigatingCourseId === course.id;
             return (
               <div
                 className="box"
                 key={course.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => handleCardClick(course.id)}
+                onClick={() => handleCourseClick(course)}
                 onKeyPress={(event) => {
-                  if (event.key === 'Enter') handleCardClick(course.id);
+                  if (event.key === 'Enter') handleCourseClick(course);
                 }}
-                style={{ cursor: 'pointer' }}
+                aria-busy={isNavigating}
+                style={{ cursor: isNavigating ? 'wait' : 'pointer', opacity: isNavigating ? 0.7 : 1 }}
               >
                 <div className="relative mb-4">
                   <img

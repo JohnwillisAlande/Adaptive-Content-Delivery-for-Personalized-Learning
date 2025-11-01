@@ -9,6 +9,12 @@ import { useAuth } from './context/AuthContext';
 
 const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
 const PAGE_SIZE = 12;
+const FORMAT_FILTERS = [
+  { key: 'All', label: 'All' },
+  { key: 'Visual', label: 'Visual' },
+  { key: 'Verbal', label: 'Verbal' },
+  { key: 'Audio', label: 'Audio' }
+];
 
 const resolveThumb = (thumb, fallback) => {
   if (thumb) {
@@ -19,6 +25,14 @@ const resolveThumb = (thumb, fallback) => {
   return fallback || 'https://via.placeholder.com/640x360/111827/ffffff?text=Material';
 };
 
+const resolveAssetUrl = (value) => {
+  if (!value) return '';
+  if (value.startsWith('blob:')) return value;
+  if (value.startsWith('http')) return value;
+  if (value.startsWith('/')) return `${FILE_BASE_URL}${value}`;
+  return `${FILE_BASE_URL}/uploaded_files/${value}`;
+};
+
 const CoursesDetail = React.memo(() => {
   const { courseId } = useParams();
   const navigate = useNavigate();
@@ -26,8 +40,7 @@ const CoursesDetail = React.memo(() => {
 
   const [course, setCourse] = useState(null);
   const [materials, setMaterials] = useState([]);
-  const [filters, setFilters] = useState({ categories: [], activeCategory: 'All' });
-  const [category, setCategory] = useState('All');
+  const [formatFilter, setFormatFilter] = useState('All');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
@@ -35,13 +48,7 @@ const CoursesDetail = React.memo(() => {
   const [enrollmentRequired, setEnrollmentRequired] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [enrolling, setEnrolling] = useState(false);
-
-  const categoryOptions = useMemo(() => {
-    if (filters.categories && filters.categories.length) {
-      return filters.categories;
-    }
-    return [{ key: 'All', label: 'All', count: materials.length }];
-  }, [filters.categories, materials.length]);
+  const [expandedMaterial, setExpandedMaterial] = useState(null);
 
   useEffect(() => {
     if (initializing) return;
@@ -62,13 +69,12 @@ const CoursesDetail = React.memo(() => {
           params: {
             page,
             search,
-            category
+            format: formatFilter
           }
         });
         if (!active) return;
 
         setCourse(data.course || null);
-        setFilters(data.filters || { categories: [], activeCategory: 'All' });
         setEnrollmentRequired(Boolean(data.enrollmentRequired));
 
         const incomingMaterials = Array.isArray(data.materials) ? data.materials : [];
@@ -94,32 +100,29 @@ const CoursesDetail = React.memo(() => {
     return () => {
       active = false;
     };
-  }, [courseId, page, search, category, refreshToken, isAuthenticated, initializing]);
-
-  useEffect(() => {
-    const keys = categoryOptions.map(cat => cat.key);
-    if (keys.length && !keys.includes(category)) {
-      const fallback = filters.activeCategory && keys.includes(filters.activeCategory)
-        ? filters.activeCategory
-        : keys[0];
-      if (fallback && fallback !== category) {
-        setCategory(fallback);
-      }
-    }
-  }, [categoryOptions, category, filters.activeCategory]);
+  }, [courseId, page, search, formatFilter, refreshToken, isAuthenticated, initializing]);
 
   useEffect(() => {
     setPage(1);
     setMaterials([]);
     setHasMore(true);
-  }, [search, category]);
+  }, [search, formatFilter]);
 
   const handleSearchChange = (event) => {
     setSearch(event.target.value);
   };
 
-  const handleCategoryChange = (nextCategory) => {
-    setCategory(nextCategory);
+  const handleBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate('/courses');
+    }
+  };
+
+  const handleFormatChange = (nextFormat) => {
+    if (nextFormat === formatFilter) return;
+    setFormatFilter(nextFormat);
   };
 
   const handleLoadMore = () => {
@@ -150,6 +153,132 @@ const CoursesDetail = React.memo(() => {
   };
 
   const courseProgress = useMemo(() => (course ? Math.max(0, Math.min(100, course.progressPercent || 0)) : 0), [course]);
+  const canAccessMaterials = !enrollmentRequired;
+  const isStudent = user?.userType === 'Student';
+  const isTeacher = user?.userType === 'Teacher';
+
+  const sortedPreviewMaterials = useMemo(() => {
+    return [...materials].sort((a, b) => {
+      const orderA = a.order ?? Number.MAX_SAFE_INTEGER;
+      const orderB = b.order ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      const dateA = a.date ? new Date(a.date).getTime() : 0;
+      const dateB = b.date ? new Date(b.date).getTime() : 0;
+      return dateA - dateB;
+    });
+  }, [materials]);
+
+  const renderTeacherPreview = (material) => {
+    const category = material.annotations?.category || '';
+    const format = material.annotations?.format || '';
+    const fileUrl = resolveAssetUrl(material.fileUrl);
+    const videoUrl = resolveAssetUrl(material.video);
+    const textContent = material.textContent;
+
+    const hasPdf = fileUrl && /\.pdf($|#|\?)/i.test(fileUrl);
+    const hasAudio = fileUrl && /\.(mp3|m4a|aac|wav|ogg)$/i.test(fileUrl);
+    const hasVideoFile = videoUrl && /\.(mp4|webm|ogg)$/i.test(videoUrl);
+
+    if (material.video || category === 'Video' || hasVideoFile) {
+      const source = videoUrl || fileUrl;
+      return source ? (
+        <video controls className="teacher-preview__media">
+          <source src={source} />
+          Your browser does not support the video tag.
+        </video>
+      ) : (
+        <p className="teacher-preview__placeholder">Video unavailable.</p>
+      );
+    }
+
+    if (category === 'Audio' || format === 'Audio' || hasAudio) {
+      const source = fileUrl || videoUrl;
+      return source ? (
+        <audio controls className="teacher-preview__media">
+          <source src={source} />
+          Your browser does not support the audio element.
+        </audio>
+      ) : (
+        <p className="teacher-preview__placeholder">Audio unavailable.</p>
+      );
+    }
+
+    if (hasPdf) {
+      return (
+        <div className="teacher-preview__pdf-wrapper">
+          <iframe
+            title={material.title}
+            src={`${fileUrl}#toolbar=0`}
+            className="teacher-preview__pdf"
+          />
+          <button
+            type="button"
+            className="teacher-preview__expand"
+            onClick={(event) => {
+            event.stopPropagation();
+            setExpandedMaterial({ ...material, assetUrl: fileUrl, mode: 'pdf' });
+          }}
+            aria-label="Expand PDF"
+          >
+            ⤢
+          </button>
+        </div>
+      );
+    }
+
+    if (category === 'Reading' || category === 'Outline' || format === 'Verbal') {
+      if (textContent) {
+        return (
+          <div className="teacher-preview__text">
+            {textContent.split('\n').map((paragraph, idx) => (
+              <p key={`paragraph-${idx}`}>{paragraph}</p>
+            ))}
+          </div>
+        );
+      }
+      if (fileUrl) {
+        return (
+          <a href={fileUrl} target="_blank" rel="noreferrer" className="inline-btn teacher-preview__link">
+            Open document
+          </a>
+        );
+      }
+    }
+
+    if (category === 'Flashcards' && Array.isArray(material.quizData) && material.quizData.length) {
+      return (
+        <ul className="teacher-preview__flashcards">
+          {material.quizData.map((card, index) => (
+            <li key={`card-${index}`}>
+              <strong>{card.question || card.front || `Card ${index + 1}`}</strong>
+              <span>{card.answer || (card.options && card.options[card.correctIndex]) || card.back}</span>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
+    if (category === 'Quiz') {
+      return (
+        <div className="teacher-preview__quiz">
+          <p>This lesson contains a quiz with {material.quizData?.length || 0} questions.</p>
+        </div>
+      );
+    }
+
+    return (
+      <p className="teacher-preview__placeholder">
+        Preview not available.{' '}
+        {(fileUrl || videoUrl) ? (
+          <a href={fileUrl || videoUrl} target="_blank" rel="noreferrer">
+            Open resource
+          </a>
+        ) : (
+          'Resource missing.'
+        )}
+      </p>
+    );
+  };
 
   if (loading && page === 1) {
     return (
@@ -159,20 +288,30 @@ const CoursesDetail = React.memo(() => {
     );
   }
 
-  const canAccessMaterials = !enrollmentRequired;
-  const isStudent = user?.userType === 'Student';
-
   return (
     <section className="courses" style={{ minHeight: '100vh' }}>
-      <div className="flex items-center gap-3 mb-6">
-        <button
-          type="button"
-          className="option-btn flex items-center gap-2"
-          onClick={() => navigate('/courses')}
-        >
-          <FaArrowLeft /> Back
-        </button>
-        {course && <span className="text-sm text-slate-400">{course.title}</span>}
+      <div className="course-detail-nav-wrapper">
+        <div className="courses-nav course-detail-nav">
+          <button
+            type="button"
+            className="course-detail-back"
+            onClick={handleBack}
+            aria-label="Back to previous page"
+          >
+            <FaArrowLeft />
+          </button>
+          {FORMAT_FILTERS.map(option => (
+            <button
+              key={option.key}
+              type="button"
+              className={`nav-btn${formatFilter === option.key ? ' active' : ''}`}
+              onClick={() => handleFormatChange(option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {course && <span className="course-detail-nav-course">{course.title}</span>}
       </div>
       {course && (
         <header className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg mb-6 space-y-4">
@@ -207,19 +346,6 @@ const CoursesDetail = React.memo(() => {
           </div>
         </header>
       )}
-
-        <div className="flex flex-wrap gap-3 mb-6">
-        {categoryOptions.map(cat => (
-          <button
-            key={cat.key}
-            type="button"
-            className={`option-btn${category === cat.key ? ' active' : ''}`}
-            onClick={() => handleCategoryChange(cat.key)}
-          >
-            {cat.label} ({cat.count})
-          </button>
-        ))}
-      </div>
 
       <div className="flex flex-wrap gap-4 mb-6">
         <input
@@ -309,8 +435,80 @@ const CoursesDetail = React.memo(() => {
           })}
         </InfiniteScroll>
       )}
+
+      {isTeacher && sortedPreviewMaterials.length > 0 && (
+        <section className="teacher-preview">
+          <h2 className="teacher-preview__title">Course Materials (Teacher View)</h2>
+          <p className="teacher-preview__subtitle">
+            Review every resource without opening each lesson individually. Materials appear in upload order.
+          </p>
+          <div className="teacher-preview__list">
+            {sortedPreviewMaterials.map((material) => (
+              <article key={`preview-${material._id || material.id}`} className="teacher-preview__item">
+                <header className="teacher-preview__item-header">
+                  <span className="teacher-preview__badge">Lesson {material.order ?? '—'}</span>
+                  <div>
+                    <h3>{material.title}</h3>
+                    <div className="teacher-preview__meta">
+                      {material.annotations?.category && <span>{material.annotations.category}</span>}
+                      {material.annotations?.format && <span>{material.annotations.format}</span>}
+                      {material.fileUrl && (
+                        <a href={resolveAssetUrl(material.fileUrl)} target="_blank" rel="noreferrer">
+                          Download
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </header>
+                <div className="teacher-preview__body">
+                  {renderTeacherPreview(material)}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {expandedMaterial && (
+        <div
+          className="teacher-preview-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={expandedMaterial.title}
+          onClick={() => setExpandedMaterial(null)}
+        >
+          <div
+            className="teacher-preview-modal__content"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="teacher-preview-modal__controls">
+              <button
+                type="button"
+                className="teacher-preview-modal__close"
+                onClick={() => setExpandedMaterial(null)}
+                aria-label="Close full size preview"
+              >
+                �
+              </button>
+            </div>
+            <h3>{expandedMaterial.title}</h3>
+            <div className="teacher-preview-modal__body">
+              {expandedMaterial.mode === 'pdf' && (
+                <iframe
+                  title={`${expandedMaterial.title} full preview`}
+                  src={`${resolveAssetUrl(expandedMaterial.assetUrl)}#toolbar=1`}
+                  className="teacher-preview-modal__frame"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 });
 
 export default CoursesDetail;
+
+
+

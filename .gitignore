@@ -31,3 +31,6 @@ Thumbs.db
 # IDE/Editor Configuration
 .idea/
 .vscode/
+
+
+/uploaded_files

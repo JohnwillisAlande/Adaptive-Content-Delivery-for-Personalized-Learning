@@ -68,6 +68,7 @@ function UploadMaterial() {
     format: FORMAT_OPTIONS[0].value,
     type: TYPE_OPTIONS[0].value,
     category: CATEGORY_OPTIONS[0].value,
+    status: 'active',
     videoSource: 'upload',
     videoUrl: '',
     textContent: '',
@@ -138,6 +139,7 @@ function UploadMaterial() {
           format: data.annotations?.format || FORMAT_OPTIONS[0].value,
           type: data.annotations?.type || TYPE_OPTIONS[0].value,
           category: detectedCategory,
+          status: data.status || 'active',
           videoSource: data.video && data.video.startsWith('http') ? 'link' : 'upload',
           videoUrl: data.video && data.video.startsWith('http') ? data.video : '',
           textContent: data.textContent || '',
@@ -382,6 +384,7 @@ useEffect(() => {
     payload.append('format', form.format);
     payload.append('type', form.type);
     payload.append('category', form.category);
+    payload.append('status', form.status);
     payload.append('textContent', trimmedTextContent);
     payload.append('fileUrl', trimmedFileUrl);
 
@@ -534,6 +537,21 @@ useEffect(() => {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label htmlFor="material-status">Material status</label>
+                <select
+                  id="material-status"
+                  name="status"
+                  value={form.status}
+                  onChange={handleInputChange}
+                >
+                  <option value="active">Active &ndash; visible to students</option>
+                  <option value="deactive">Inactive &ndash; hidden from students</option>
+                </select>
+                <p className="field-hint">
+                  Deactivate content to hide it from learners without deleting the file.
+                </p>
               </div>
               <div className="full-span">
                 <label htmlFor="material-title">
@@ -775,7 +793,3 @@ useEffect(() => {
 }
 
 export default UploadMaterial;
-
-
-
-

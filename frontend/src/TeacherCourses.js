@@ -15,6 +15,21 @@ const resolveAssetUrl = (value) => {
   return `${FILE_BASE_URL}/uploaded_files/${value}`;
 };
 
+const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1523580846011-d3a5bc25702b?w=1200&q=80';
+
+const resolveThumb = (course) => {
+  const candidate =
+    course?.thumbnail ||
+    course?.thumbUrl ||
+    course?.thumb ||
+    course?.backgroundImage;
+
+  if (!candidate) return FALLBACK_IMAGE;
+  if (candidate.startsWith('http')) return candidate;
+  if (candidate.startsWith('/')) return `${FILE_BASE_URL}${candidate}`;
+  return `${FILE_BASE_URL}/uploaded_files/${candidate}`;
+};
+
 const initialFormState = {
   title: '',
   description: '',
@@ -32,62 +47,109 @@ const TeacherCourseCard = ({
   onViewMaterial,
   onEditMaterial
 }) => {
-  const thumbSrc = resolveAssetUrl(course.thumbUrl || course.thumb || '') || '/images/pic-2.jpg';
+  const id = course.id || course._id;
+  const title = course.title || course.name || 'Untitled course';
+  const subtitle = course.subtitle || course.tagline || '';
+  const description = course.description || course.summary || '';
+  const duration = course.duration || course.length || '';
+  const lessonCount = course.materialCount ?? course.lessons ?? 0;
+  const featuredLabel = course.featured ? 'Featured course' : 'Not featured';
 
-  const viewCourse = () => onViewCourse(course);
-  const uploadMaterial = (event) => {
+  const handleViewCourse = () => onViewCourse(course);
+
+  const handleUploadMaterial = (event) => {
     event.stopPropagation();
     onUploadMaterial(course);
   };
-  const editCourse = (event) => {
+
+  const handleEditCourse = (event) => {
     event.stopPropagation();
     onEditCourse(course);
   };
 
   return (
-    <article
-      className="card course-card teacher-card animate-in"
+    <div
+      className="box my-course-card teacher-course-card"
       role="button"
       tabIndex={0}
-      onClick={viewCourse}
+      onClick={handleViewCourse}
       onKeyDown={(event) => {
-        if (event.key === 'Enter') viewCourse();
+        if (event.key === 'Enter') handleViewCourse();
       }}
     >
-      <div className="thumb-wrapper">
-        <img src={thumbSrc} alt={course.title} />
+      <div className="relative mb-4">
+        <img
+          src={resolveThumb(course)}
+          alt={title}
+          className="thumb"
+          style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '0.75rem' }}
+          loading="lazy"
+        />
+        <span className="teacher-course-badge">
+          {lessonCount} {lessonCount === 1 ? 'lesson' : 'lessons'}
+        </span>
       </div>
-      <h3 className="card-title">{course.title}</h3>
-      <p className="card-meta">{course.description}</p>
-      <div className="chip-row">
-        {course.duration && <span className="chip">Duration: {course.duration}</span>}
-        <span className="chip">Lessons: {course.materialCount}</span>
+
+      <div className="title">{title}</div>
+      {subtitle && <div style={{ color: '#8892b0', marginBottom: '0.5rem' }}>{subtitle}</div>}
+      {description && <div style={{ marginBottom: '1rem', color: '#94a3b8' }}>{description}</div>}
+
+      <div className="my-course-meta">
+        {duration && <span>{duration}</span>}
+        <span>{featuredLabel}</span>
       </div>
-      <div className="form-actions" style={{ justifyContent: 'space-between' }}>
-        <button type="button" className="btn" onClick={uploadMaterial}>
+
+      <div className="teacher-course-actions">
+        <button
+          type="button"
+          className="inline-btn"
+          onClick={(event) => {
+            event.stopPropagation();
+            handleViewCourse();
+          }}
+        >
+          Open course
+        </button>
+        <button
+          type="button"
+          className="inline-option-btn"
+          onClick={handleUploadMaterial}
+        >
           Upload material
         </button>
-        <button type="button" className="option-btn" onClick={editCourse}>
+        <button
+          type="button"
+          className="inline-option-btn"
+          onClick={handleEditCourse}
+        >
           Edit details
         </button>
       </div>
 
-      <div className="list">
+      <div className="teacher-course-materials">
+        <div className="teacher-course-materials__header">
+          <span>Materials</span>
+          <span className="teacher-course-materials__count">
+            {lessonCount} {lessonCount === 1 ? 'item' : 'items'}
+          </span>
+        </div>
         {!course.materials?.length ? (
-          <div className="empty">No materials yet. Upload one to get started.</div>
+          <div className="teacher-course-materials__empty">
+            No materials yet. Upload one to get started.
+          </div>
         ) : (
-          course.materials.map(material => (
-            <div className="list-item" key={material._id}>
-              <div>
+          course.materials.map((material) => (
+            <div className="teacher-course-material" key={material._id}>
+              <div className="teacher-course-material__meta">
                 <strong>{material.title}</strong>
-                <p className="muted">
-                  Lesson {material.order} • {material.annotations?.category}
-                </p>
+                <span>
+                  Lesson {material.order} - {material.annotations?.category || 'Material'}
+                </span>
               </div>
-              <div className="action-bar">
+              <div className="teacher-course-material__actions">
                 <button
                   type="button"
-                  className="option-btn"
+                  className="inline-option-btn"
                   onClick={(event) => {
                     event.stopPropagation();
                     onViewMaterial(course, material);
@@ -110,7 +172,7 @@ const TeacherCourseCard = ({
           ))
         )}
       </div>
-    </article>
+    </div>
   );
 };
 
@@ -380,17 +442,17 @@ function TeacherCourses() {
           </form>
         </section>
 
-        <section className="card animate-in">
+        <section className="card animate-in teacher-course-list">
           {loading ? (
-            <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
-              <ClipLoader color="#53f0d2" />
+            <div className="teacher-course-list__loader">
+              <ClipLoader color="#14b8a6" />
             </div>
           ) : courses.length === 0 ? (
-            <p className="empty">
+            <div className="empty">
               You haven&apos;t created any courses yet. Use the form above to publish your first course.
-            </p>
+            </div>
           ) : (
-            <div className="card-grid">
+            <div className="box-container">
               {courses.map(course => (
                 <TeacherCourseCard
                   key={course._id}
@@ -415,3 +477,6 @@ function TeacherCourses() {
 }
 
 export default TeacherCourses;
+
+
+

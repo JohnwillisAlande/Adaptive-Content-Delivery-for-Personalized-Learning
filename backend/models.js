@@ -31,7 +31,7 @@ const ContentSchema = new mongoose.Schema({
   description: { type: String, required: true },
   thumb: { type: String, required: true },
   date: { type: Date, default: Date.now },
-  status: { type: String, default: 'deactive' },
+  status: { type: String, default: 'active' },
 
   // --- Sequencing field for adaptive ordering ---
   order: { type: Number, default: 0 }, // e.g., 1, 2, 3, 4

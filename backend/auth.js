@@ -688,6 +688,46 @@ router.post('/predict-style/:playlistId', auth, async (req, res) => {
     }
 });
 
+/**
+ * ROUTE 3: Manually Set Learning Style
+ * Your frontend profile page will call this.
+ * URL: POST /api/set-style
+ */
+router.post('/set-style', auth, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { perception, input, processing, understanding } = req.body;
+
+        // 1. Find the user
+        const user = await findUserById(userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // 2. Translate string inputs into the binary learningStyle object
+        const newLearningStyle = {
+            is_intuitive: perception === 'Intuitive' ? 1 : 0,
+            is_verbal: input === 'Verbal' ? 1 : 0,
+            is_reflective: processing === 'Reflective' ? 1 : 0,
+            is_global: understanding === 'Global' ? 1 : 0
+        };
+
+        // 3. Update the user's profile
+        user.learningStyle = newLearningStyle;
+        await user.save();
+
+        // 4. Return the new style
+        res.json(newLearningStyle);
+
+    } catch (err) {
+        console.error('Set style error:', err);
+        res.status(500).json({ error: 'Server error while setting style' });
+    }
+});
 
 // 5. MODULE EXPORT
 module.exports = router;
+
+
+
+
