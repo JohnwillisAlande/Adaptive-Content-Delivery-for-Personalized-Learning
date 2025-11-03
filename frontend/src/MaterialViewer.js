@@ -71,18 +71,31 @@ const buildFlashcards = (material) => {
 function MaterialViewer() {
   const { courseId, materialId } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
   const [loading, setLoading] = useState(true);
   const [course, setCourse] = useState(null);
   const [material, setMaterial] = useState(null);
   const [quizAnswers, setQuizAnswers] = useState([]);
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizScore, setQuizScore] = useState(null);
+  const [expandedPdf, setExpandedPdf] = useState(null);
   const [flashcardIndex, setFlashcardIndex] = useState(0);
+  const [showNotepad, setShowNotepad] = useState(false);
+  const [notes, setNotes] = useState('');
+
+  const notesHydratedRef = useRef(false);
 
   const timerRef = useRef(null);
   const completedRef = useRef(false);
   const hasTrackedRef = useRef(false);
+  const lessonGoalProgressRef = useRef(user?.dailyGoal?.lessonsCompletedToday ?? 0);
+  const lessonStreakRef = useRef(user?.streaks?.lesson?.count ?? 0);
+
+  const isStudent = user?.userType === 'Student';
+  const notesStorageKey = useMemo(() => {
+    const userId = user?._id || user?.id || user?.userId || 'guest';
+    return `materialViewerNotes:${userId}`;
+  }, [user?._id, user?.id, user?.userId]);
 
   const flashcards = useMemo(() => buildFlashcards(material), [material]);
   const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [material]);
@@ -93,15 +106,51 @@ function MaterialViewer() {
       if (!user || user.userType !== 'Student') return;
       hasTrackedRef.current = true;
       try {
-        await api.post(`/courses/${courseId}/materials/${materialId}/interaction`, {
+        const { data } = await api.post(`/courses/${courseId}/materials/${materialId}/interaction`, {
           timeSpentSeconds: Math.max(0, elapsed),
           completed: overrideCompleted ?? completedRef.current
         });
+        let refreshed = false;
+        if (data?.xpAwarded) {
+          const totalXpLabel = data.totalXp ? ` (total ${data.totalXp} XP)` : '';
+          toast.success(`+${data.xpAwarded} XP earned${totalXpLabel}!`);
+          if (typeof refresh === 'function') {
+            await refresh();
+            refreshed = true;
+          }
+        }
+        if (typeof data?.streaks?.lesson?.count === 'number') {
+          if (data.streaks.lesson.count > lessonStreakRef.current) {
+            toast.success(`🔥 Lesson streak is now ${data.streaks.lesson.count} day${data.streaks.lesson.count === 1 ? '' : 's'}!`);
+          }
+          lessonStreakRef.current = data.streaks.lesson.count;
+        }
+        if (typeof data?.dailyGoal?.lessonsCompletedToday === 'number') {
+          const previous = lessonGoalProgressRef.current;
+          const current = data.dailyGoal.lessonsCompletedToday;
+          if (
+            current > previous &&
+            data.dailyGoal.lessonGoalMet &&
+            current >= (data.dailyGoal.lessonsTarget ?? 1)
+          ) {
+            toast.success('🎯 Daily lesson goal complete!');
+          }
+          lessonGoalProgressRef.current = current;
+        }
+        if (Array.isArray(data?.badgesAwarded) && data.badgesAwarded.length) {
+          data.badgesAwarded.forEach((badge) => {
+            toast.success(`Badge unlocked: ${badge.title}`);
+          });
+          if (!refreshed && typeof refresh === 'function') {
+            await refresh();
+            refreshed = true;
+          }
+        }
       } catch (err) {
         console.warn('Failed to record interaction', err);
       }
     },
-    [courseId, materialId, user]
+    [courseId, materialId, user, refresh]
   );
 
   useEffect(() => {
@@ -140,11 +189,66 @@ function MaterialViewer() {
     };
   }, [courseId, materialId, navigate, trackInteraction]);
 
+  useEffect(() => {
+    if (!isStudent) return;
+    if (typeof window === 'undefined') return;
+    notesHydratedRef.current = false;
+    let initialNotes = '';
+    try {
+      const stored = window.localStorage.getItem(notesStorageKey);
+      if (stored !== null) {
+        initialNotes = stored;
+      }
+    } catch (err) {
+      console.warn('Failed to load notepad notes', err);
+    }
+    setNotes(initialNotes);
+    notesHydratedRef.current = true;
+  }, [isStudent, notesStorageKey]);
+
+  useEffect(() => {
+    if (!isStudent) return;
+    if (typeof window === 'undefined') return;
+    if (!notesHydratedRef.current) return;
+    try {
+      window.localStorage.setItem(notesStorageKey, notes);
+    } catch (err) {
+      console.warn('Failed to persist notepad notes', err);
+    }
+  }, [notes, isStudent, notesStorageKey]);
+
+  useEffect(() => {
+    lessonGoalProgressRef.current = user?.dailyGoal?.lessonsCompletedToday ?? 0;
+  }, [user?.dailyGoal?.lessonsCompletedToday]);
+
+  useEffect(() => {
+    lessonStreakRef.current = user?.streaks?.lesson?.count ?? 0;
+  }, [user?.streaks?.lesson?.count]);
+
   const handleBack = () => {
-    if (window.history.length > 1) {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
       navigate(-1);
     } else {
       navigate(`/courses/${courseId}`);
+    }
+  };
+
+  const handleToggleNotepad = () => {
+    setShowNotepad(prev => !prev);
+  };
+
+  const handleNotesChange = (event) => {
+    setNotes(event.target.value);
+  };
+
+  const handleClearNotes = () => {
+    setNotes('');
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.removeItem(notesStorageKey);
+      } catch (err) {
+        console.warn('Failed to clear notepad notes', err);
+      }
     }
   };
 
@@ -188,12 +292,12 @@ function MaterialViewer() {
       case 'Example':
         if (youtubeEmbed) {
           return (
-            <div className="aspect-video w-full rounded-2xl overflow-hidden shadow-lg">
+            <div className="material-media material-media--video">
               <iframe
                 title={material.title}
                 src={`${youtubeEmbed}?rel=0`}
                 allow="autoplay; fullscreen"
-                className="w-full h-full"
+                className="material-media__iframe"
                 frameBorder="0"
                 allowFullScreen
               />
@@ -201,12 +305,14 @@ function MaterialViewer() {
           );
         }
         return (
-          <video
-            controls
-            className="w-full rounded-2xl shadow-lg bg-black"
-            src={videoUrl}
-            poster={resolveAssetUrl(material.thumb)}
-          />
+          <div className="material-media material-media--video">
+            <video
+              controls
+              className="material-media__player"
+              src={videoUrl}
+              poster={resolveAssetUrl(material.thumb)}
+            />
+          </div>
         );
       case 'Audio':
         return (
@@ -218,11 +324,24 @@ function MaterialViewer() {
       case 'PDF':
       case 'Reading':
         return fileUrl ? (
-          <iframe
-            src={fileUrl}
-            title={material.title}
-            className="w-full min-h-[70vh] rounded-2xl shadow-lg bg-white"
-          />
+          <div className="teacher-preview__pdf-wrapper">
+            <iframe
+              src={`${fileUrl}#toolbar=0`}
+              title={material.title}
+              className="teacher-preview__pdf"
+            />
+            <button
+              type="button"
+              className="teacher-preview__expand"
+              onClick={(event) => {
+                event.stopPropagation();
+                setExpandedPdf(fileUrl);
+              }}
+              aria-label="Expand PDF"
+            >
+              {'\u2197'}
+            </button>
+          </div>
         ) : (
           <div className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg">
             <p className="text-slate-300 whitespace-pre-line">{textContent}</p>
@@ -362,55 +481,130 @@ function MaterialViewer() {
   }
 
   return (
-    <section className="courses" style={{ minHeight: '100vh' }}>
-      <div className="flex items-center gap-4 mb-6">
+    <div className={`material-viewer-shell${showNotepad ? ' material-viewer-shell--split' : ''}`}>
+      {isStudent && (
         <button
           type="button"
-          className="option-btn flex items-center gap-2"
-          onClick={handleBack}
+          className={`notepad-toggle${showNotepad ? ' notepad-toggle--active' : ''}`}
+          onClick={handleToggleNotepad}
+          aria-label={showNotepad ? 'Hide notepad' : 'Open notepad'}
         >
-          <FaArrowLeft /> Back
+          <FaRegStickyNote />
+          <span>{showNotepad ? 'Hide notes' : 'Open notes'}</span>
         </button>
-        <span className="text-sm text-slate-400">
-          {course?.title || 'Course'}
-        </span>
-      </div>
-
-      <div className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg space-y-6">
-        <div>
-          <div className="flex items-center gap-3 text-teal-400 text-sm uppercase tracking-widest mb-2">
-            {category === 'Video' && <FaVideo />}
-            {category === 'Audio' && <FaHeadphones />}
-            {category === 'PDF' && <FaFilePdf />}
-            {category === 'Reading' && <FaRegStickyNote />}
-            <span>{category}</span>
-          </div>
-          <h1 className="text-3xl font-bold text-white mb-2">{material.title}</h1>
-          {description && <p className="text-slate-300">{description}</p>}
+      )}
+      <section className="courses material-viewer-content" style={{ minHeight: '100vh' }}>
+        <div className="flex items-center gap-4 mb-6">
+          <button
+            type="button"
+            className="option-btn flex items-center gap-2"
+            onClick={handleBack}
+          >
+            <FaArrowLeft /> Back
+          </button>
+          <span className="text-sm text-slate-400">
+            {course?.title || 'Course'}
+          </span>
         </div>
 
-        {renderContent()}
-
-        {category !== 'Quiz' && textContent && category !== 'Flashcards' && (
-          <div className="bg-[#111827] p-6 rounded-2xl shadow-inner">
-            <h2 className="text-xl font-semibold text-white mb-3">Lesson Notes</h2>
-            <p className="text-slate-300 whitespace-pre-line">{textContent}</p>
+        <div className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg space-y-6">
+          <div>
+            <div className="flex items-center gap-3 text-teal-400 text-sm uppercase tracking-widest mb-2">
+              {category === 'Video' && <FaVideo />}
+              {category === 'Audio' && <FaHeadphones />}
+              {category === 'PDF' && <FaFilePdf />}
+              {category === 'Reading' && <FaRegStickyNote />}
+              <span>{category}</span>
+            </div>
+            <h1 className="text-3xl font-bold text-white mb-2">{material.title}</h1>
+            {description && <p className="text-slate-300">{description}</p>}
           </div>
-        )}
 
-        {fileUrl && category !== 'PDF' && category !== 'Audio' && category !== 'Video' && (
-          <a
-            href={fileUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-btn"
+          {renderContent()}
+
+          {category !== 'Quiz' && textContent && category !== 'Flashcards' && (
+            <div className="bg-[#111827] p-6 rounded-2xl shadow-inner">
+              <h2 className="text-xl font-semibold text-white mb-3">Lesson Notes</h2>
+              <p className="text-slate-300 whitespace-pre-line">{textContent}</p>
+            </div>
+          )}
+
+          {fileUrl && category !== 'PDF' && category !== 'Audio' && category !== 'Video' && (
+            <a
+              href={fileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-btn"
+            >
+              Download Resource
+            </a>
+          )}
+        </div>
+      </section>
+
+      {showNotepad && (
+        <aside className="material-notepad" aria-label="Lesson notepad">
+          <header className="material-notepad__header">
+            <div className="material-notepad__title">
+              <FaRegStickyNote />
+              <span>My Notes</span>
+            </div>
+            <button
+              type="button"
+              className="material-notepad__action"
+              onClick={handleClearNotes}
+            >
+              Clear
+            </button>
+          </header>
+          <p className="material-notepad__hint">
+            Jot ideas, questions, or summaries as you review the material. Notes stay here until you close this browser session.
+          </p>
+          <textarea
+            value={notes}
+            onChange={handleNotesChange}
+            placeholder="Start typing your thoughts..."
+            className="material-notepad__textarea"
+          />
+        </aside>
+      )}
+      {expandedPdf && (
+        <div
+          className="teacher-preview-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Expanded PDF"
+          onClick={() => setExpandedPdf(null)}
+        >
+          <div
+            className="teacher-preview-modal__content"
+            onClick={(event) => event.stopPropagation()}
           >
-            Download Resource
-          </a>
-        )}
-      </div>
-    </section>
+            <div className="teacher-preview-modal__controls">
+              <button
+                type="button"
+                className="teacher-preview-modal__close"
+                onClick={() => setExpandedPdf(null)}
+                aria-label="Close full size preview"
+              >
+                &times;
+              </button>
+            </div>
+            <div className="teacher-preview-modal__body">
+              <iframe
+                title="Expanded lesson preview"
+                src={`${resolveAssetUrl(expandedPdf)}#toolbar=1`}
+                className="teacher-preview-modal__frame"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
 export default MaterialViewer;
+
+
+

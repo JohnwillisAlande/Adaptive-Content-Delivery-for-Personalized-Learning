@@ -10,6 +10,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const models = require('./models');
+const { awardLoginXp, getBadgeDefinitions, getStudentBadges, dailyGoalSnapshot, streakSnapshot } = require('./gamification');
 const passport = require('passport');
 const GitHubStrategy = require('passport-github2').Strategy;
 const { OAuth2Client } = require('google-auth-library');
@@ -280,10 +281,37 @@ router.post('/auth/google', async (req, res) => {
         if (user instanceof models.Teacher) userType = 'Teacher';
         if (user instanceof models.Admin) userType = 'Admin';
 
+        let xpAwarded = 0;
+        let totalXp = user.xp || 0;
+        let badgesAwarded = [];
+        let streaks = null;
+        let dailyGoal = null;
+        if (userType === 'Student') {
+            const result = await awardLoginXp(user);
+            xpAwarded = result.awarded || 0;
+            totalXp = result.totalXp ?? totalXp;
+            badgesAwarded = result.badgesAwarded || [];
+            streaks = result.streaks || streakSnapshot(user);
+            dailyGoal = result.dailyGoal || dailyGoalSnapshot(user);
+        }
+        const badges = userType === 'Student' ? await getStudentBadges(user._id) : [];
+
         const jwtToken = jwt.sign({ id: user._id, email: user.email, userType }, JWT_SECRET, { expiresIn: '1d' });
         res.json({
             token: jwtToken,
-            user: { id: user._id, name: user.name, email: user.email, image: user.image, userType },
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                image: user.image,
+                userType,
+                xp: totalXp,
+                streaks,
+                dailyGoal
+            },
+            xpAwarded,
+            badgesAwarded,
+            badges,
             require2fa: false
         });
     } catch (err) {
@@ -329,8 +357,39 @@ passport.use(new GitHubStrategy({
         if (user instanceof models.Teacher) userType = 'Teacher';
         if (user instanceof models.Admin) userType = 'Admin';
 
+        let xpAwarded = 0;
+        let totalXp = user.xp || 0;
+        let badgesAwarded = [];
+        let streaks = null;
+        let dailyGoal = null;
+        let badges = [];
+        if (userType === 'Student') {
+            const result = await awardLoginXp(user);
+            xpAwarded = result.awarded || 0;
+            totalXp = result.totalXp ?? totalXp;
+            badgesAwarded = result.badgesAwarded || [];
+            streaks = result.streaks || streakSnapshot(user);
+            dailyGoal = result.dailyGoal || dailyGoalSnapshot(user);
+            badges = await getStudentBadges(user._id);
+        }
+
         const token = jwt.sign({ id: user._id, email: user.email, userType }, JWT_SECRET, { expiresIn: '1d' });
-        done(null, { token, user: { id: user._id, name: user.name, email: user.email, image: user.image, userType } });
+        done(null, {
+            token,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                image: user.image,
+                userType,
+                xp: totalXp,
+                streaks,
+                dailyGoal,
+                badges
+            },
+            xpAwarded,
+            badgesAwarded
+        });
     } catch (err) {
         done(err, null);
     }
@@ -418,8 +477,39 @@ router.post('/login', async (req, res) => {
         const match = await bcrypt.compare(password, user.password);
         if (!match) return res.status(400).json({ error: 'Invalid credentials' });
 
+        let xpAwarded = 0;
+        let totalXp = user.xp || 0;
+        let badgesAwarded = [];
+        let streaks = null;
+        let dailyGoal = null;
+        if (userType === 'Student') {
+            const result = await awardLoginXp(user);
+            xpAwarded = result.awarded || 0;
+            totalXp = result.totalXp ?? totalXp;
+            badgesAwarded = result.badgesAwarded || [];
+            streaks = result.streaks || streakSnapshot(user);
+            dailyGoal = result.dailyGoal || dailyGoalSnapshot(user);
+        }
+        const badges = userType === 'Student' ? await getStudentBadges(user._id) : [];
+
         const token = jwt.sign({ id: user._id, email: user.email, userType }, JWT_SECRET, { expiresIn: '1d' });
-        res.json({ token, user: { id: user._id, name: user.name, email: user.email, image: user.image, userType }, require2fa: false });
+        res.json({
+            token,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                image: user.image,
+                userType,
+                xp: totalXp,
+                streaks,
+                dailyGoal
+            },
+            xpAwarded,
+            badgesAwarded,
+            badges,
+            require2fa: false
+        });
     } catch (err) {
         console.error('Login error:', err);
         res.status(500).json({ error: 'Server error' });
@@ -467,7 +557,24 @@ router.put('/profile', auth, upload.single('image'), async (req, res) => {
     try {
         const user = await Model.findByIdAndUpdate(id, updateFields, { new: true });
         if (!user) return res.status(404).json({ error: 'User not found' });
-        res.status(200).json({ message: 'Profile updated', user: { id: user._id, name: user.name, email: user.email, image: user.image, userType } });
+        const isStudent = user.constructor?.modelName === 'Student';
+        const badges = isStudent ? await getStudentBadges(user._id) : [];
+        const streaks = isStudent ? streakSnapshot(user) : null;
+        const dailyGoal = isStudent ? dailyGoalSnapshot(user) : null;
+        res.status(200).json({
+            message: 'Profile updated',
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                image: user.image,
+                userType,
+                xp: user.xp || 0,
+                badges,
+                streaks,
+                dailyGoal
+            }
+        });
     } catch (err) {
         console.error('Profile update error:', err);
         res.status(500).json({ error: 'Server error' });
@@ -510,11 +617,55 @@ router.get('/profile', auth, async (req, res) => {
     // FIXED: Use helper function
     const user = await findUserById(req.user.id); 
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ id: user._id, name: user.name, email: user.email, image: user.image, userType: req.user.userType });
+    const isStudent = user.constructor?.modelName === 'Student';
+    const badges = isStudent ? await getStudentBadges(user._id) : [];
+    const streaks = isStudent ? streakSnapshot(user) : null;
+    const dailyGoal = isStudent ? dailyGoalSnapshot(user) : null;
+    res.json({
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        image: user.image,
+        userType: req.user.userType,
+        xp: user.xp || 0,
+        badges,
+        streaks,
+        dailyGoal
+    });
 });
 
 // --- Test route ---
 router.get('/test', (req, res) => res.send('Router is working'));
+
+router.get('/gamification/summary', auth, async (req, res) => {
+    const user = await findUserById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.constructor?.modelName !== 'Student') {
+        const definitions = await getBadgeDefinitions();
+        return res.json({ xp: 0, badges: [], definitions, streaks: null, dailyGoal: null });
+    }
+    const [badges, definitions] = await Promise.all([
+        getStudentBadges(user._id),
+        getBadgeDefinitions()
+    ]);
+    res.json({
+        xp: user.xp || 0,
+        badges,
+        definitions,
+        streaks: streakSnapshot(user),
+        dailyGoal: dailyGoalSnapshot(user)
+    });
+});
+
+router.get('/gamification/badges', auth, async (req, res) => {
+    const definitions = await getBadgeDefinitions();
+    const user = await findUserById(req.user.id);
+    if (!user || user.constructor?.modelName !== 'Student') {
+        return res.json({ badges: definitions, earned: [] });
+    }
+    const earned = await getStudentBadges(user._id);
+    res.json({ badges: definitions, earned });
+});
 
 // ---
 // ---
@@ -727,6 +878,14 @@ router.post('/set-style', auth, async (req, res) => {
 
 // 5. MODULE EXPORT
 module.exports = router;
+
+
+
+
+
+
+
+
 
 
 

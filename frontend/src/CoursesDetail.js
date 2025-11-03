@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import InfiniteScroll from 'react-infinite-scroll-component';
 import ClipLoader from 'react-spinners/ClipLoader';
-import { FaArrowLeft, FaCheck } from 'react-icons/fa';
+import { FaArrowLeft, FaCheck, FaHeart, FaRegHeart, FaRegCommentDots } from 'react-icons/fa';
 import { toast } from 'react-toastify';
 import api from './api';
 import { useAuth } from './context/AuthContext';
@@ -49,6 +49,12 @@ const CoursesDetail = React.memo(() => {
   const [refreshToken, setRefreshToken] = useState(0);
   const [enrolling, setEnrolling] = useState(false);
   const [expandedMaterial, setExpandedMaterial] = useState(null);
+  const [likesCount, setLikesCount] = useState(0);
+  const [hasLiked, setHasLiked] = useState(false);
+  const [socialLoading, setSocialLoading] = useState(true);
+  const [comments, setComments] = useState([]);
+  const [commentValue, setCommentValue] = useState('');
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
 
   useEffect(() => {
     if (initializing) return;
@@ -123,6 +129,80 @@ const CoursesDetail = React.memo(() => {
   const handleFormatChange = (nextFormat) => {
     if (nextFormat === formatFilter) return;
     setFormatFilter(nextFormat);
+  };
+
+  const formatCommentDate = useCallback((value) => {
+    if (!value) return '';
+    try {
+      return new Date(value).toLocaleString();
+    } catch (err) {
+      return '';
+    }
+  }, []);
+
+  const fetchCourseSocial = useCallback(async () => {
+    setSocialLoading(true);
+    try {
+      const { data } = await api.get(`/courses/${courseId}/social`);
+      setLikesCount(data?.likesCount || 0);
+      setHasLiked(Boolean(data?.hasLiked));
+      setComments(Array.isArray(data?.comments) ? data.comments : []);
+    } catch (err) {
+      console.warn('Failed to load course feedback', err);
+      setLikesCount(0);
+      setHasLiked(false);
+      setComments([]);
+      toast.error(err.response?.data?.error || 'Failed to load course feedback');
+    } finally {
+      setSocialLoading(false);
+    }
+  }, [courseId]);
+
+  useEffect(() => {
+    fetchCourseSocial();
+  }, [fetchCourseSocial]);
+
+  const handleToggleLike = useCallback(async () => {
+    if (!isAuthenticated) {
+      toast.info('Please login to like this course');
+      navigate('/login');
+      return;
+    }
+    try {
+      const { data } = await api.post(`/courses/${courseId}/like`);
+      setHasLiked(Boolean(data?.liked));
+      setLikesCount(data?.likesCount ?? 0);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Unable to update like');
+    }
+  }, [courseId, isAuthenticated, navigate]);
+
+  const handleCommentSubmit = async (event) => {
+    event.preventDefault();
+    if (!isAuthenticated) {
+      toast.info('Please login to comment on this course');
+      navigate('/login');
+      return;
+    }
+    const trimmed = commentValue.trim();
+    if (!trimmed) {
+      toast.warn('Enter a comment before submitting');
+      return;
+    }
+    if (trimmed.length > 1000) {
+      toast.warn('Comment is too long');
+      return;
+    }
+    setCommentSubmitting(true);
+    try {
+      const { data } = await api.post(`/courses/${courseId}/comments`, { comment: trimmed });
+      setComments(prev => [data, ...prev]);
+      setCommentValue('');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to post comment');
+    } finally {
+      setCommentSubmitting(false);
+    }
   };
 
   const handleLoadMore = () => {
@@ -220,7 +300,7 @@ const CoursesDetail = React.memo(() => {
           }}
             aria-label="Expand PDF"
           >
-            ⤢
+            {'\u2197'}
           </button>
         </div>
       );
@@ -344,8 +424,24 @@ const CoursesDetail = React.memo(() => {
               />
             </div>
           </div>
-        </header>
-      )}
+      </header>
+    )}
+
+      <div className="course-social-card">
+        <button
+          type="button"
+          className={`course-social-like${hasLiked ? ' course-social-like--active' : ''}`}
+          onClick={handleToggleLike}
+          disabled={socialLoading}
+        >
+          {hasLiked ? <FaHeart /> : <FaRegHeart />}
+          <span>{socialLoading ? '—' : `${likesCount} ${likesCount === 1 ? 'Like' : 'Likes'}`}</span>
+        </button>
+        <div className="course-social-summary">
+          <FaRegCommentDots />
+          <span>{socialLoading ? 'Loading comments...' : `${comments.length} ${comments.length === 1 ? 'Comment' : 'Comments'}`}</span>
+        </div>
+      </div>
 
       <div className="flex flex-wrap gap-4 mb-6">
         <input
@@ -377,64 +473,67 @@ const CoursesDetail = React.memo(() => {
           )}
         </div>
       )}
-      {!materials.length && !loading ? (
-        enrollmentRequired ? null : <p className="empty">No materials available yet.</p>
-      ) : (
-        <InfiniteScroll
-          dataLength={materials.length}
-          next={handleLoadMore}
-          hasMore={hasMore}
-          loader={<div className="flex justify-center py-6"><ClipLoader color="#14b8a6" /></div>}
-          className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
-        >
-          {materials.map(material => {
-            const thumb = resolveThumb(material.thumb, course?.backgroundImage);
-            const completed = Boolean(material.isCompleted);
-            return (
-              <article
-                key={material._id || material.id}
-                className={`relative bg-[#1a1d2e] rounded-2xl overflow-hidden shadow-lg border border-transparent hover:border-teal-500 transition ${!canAccessMaterials ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}
-                onClick={() => canAccessMaterials && navigate(`/courses/${courseId}/materials/${material._id || material.id}`)}
-                onKeyPress={(event) => {
-                  if (event.key === 'Enter' && canAccessMaterials) {
-                    navigate(`/courses/${courseId}/materials/${material._id || material.id}`);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <div className="relative">
-                  <img
-                    src={thumb}
-                    alt={material.title}
-                    className="w-full h-48 object-cover"
-                    loading="lazy"
-                  />
-                  <div className="absolute top-3 left-3 bg-black/70 text-xs uppercase tracking-widest px-3 py-1 rounded-full">
-                    {material.annotations?.category || 'Material'}
-                  </div>
-                  {completed && (
-                    <span className="absolute top-3 right-3 bg-teal-500 text-white p-2 rounded-full shadow">
-                      <FaCheck />
-                    </span>
-                  )}
-                </div>
-                <div className="p-5 space-y-3">
-                  <h3 className="text-xl font-semibold text-white">{material.title}</h3>
-                  <p className="text-sm text-slate-300 line-clamp-2">{material.description}</p>
-                  <div className="flex flex-wrap gap-2 text-xs text-slate-400">
-                    {material.annotations?.format && <span>{material.annotations.format}</span>}
-                    {material.annotations?.type && <span>{material.annotations.type}</span>}
-                    {typeof material.order === 'number' && material.order > 0 && (
-                      <span>Lesson {material.order}</span>
+      {!isTeacher && (
+        !materials.length && !loading ? (
+          enrollmentRequired ? null : <p className="empty">No materials available yet.</p>
+        ) : (
+          <InfiniteScroll
+            dataLength={materials.length}
+            next={handleLoadMore}
+            hasMore={hasMore}
+            loader={<div className="flex justify-center py-6"><ClipLoader color="#14b8a6" /></div>}
+            className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
+          >
+            {materials.map(material => {
+              const thumb = resolveThumb(material.thumb, course?.backgroundImage);
+              const completed = Boolean(material.isCompleted);
+              return (
+                <article
+                  key={material._id || material.id}
+                  className={`relative bg-[#1a1d2e] rounded-2xl overflow-hidden shadow-lg border border-transparent hover:border-teal-500 transition ${!canAccessMaterials ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}
+                  onClick={() => canAccessMaterials && navigate(`/courses/${courseId}/materials/${material._id || material.id}`)}
+                  onKeyPress={(event) => {
+                    if (event.key === 'Enter' && canAccessMaterials) {
+                      navigate(`/courses/${courseId}/materials/${material._id || material.id}`);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="relative">
+                    <img
+                      src={thumb}
+                      alt={material.title}
+                      className="w-full h-48 object-cover"
+                      loading="lazy"
+                    />
+                    <div className="absolute top-3 left-3 bg-black/70 text-xs uppercase tracking-widest px-3 py-1 rounded-full">
+                      {material.annotations?.category || 'Material'}
+                    </div>
+                    {completed && (
+                      <span className="absolute top-3 right-3 bg-teal-500 text-white p-2 rounded-full shadow">
+                        <FaCheck />
+                      </span>
                     )}
                   </div>
-                </div>
-              </article>
-            );
-          })}
-        </InfiniteScroll>
+                  <div className="p-5 space-y-3">
+                    <h3 className="text-xl font-semibold text-white">{material.title}</h3>
+                    <p className="text-sm text-slate-300 line-clamp-2">{material.description}</p>
+                    <div className="flex flex-wrap gap-2 text-xs text-slate-400">
+                      {material.annotations?.format && <span>{material.annotations.format}</span>}
+                      {material.annotations?.type && <span>{material.annotations.type}</span>}
+                      {typeof material.order === 'number' && material.order > 0 && (
+                        <span>Lesson {material.order}</span>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </InfiniteScroll>
+        )
       )}
+
 
       {isTeacher && sortedPreviewMaterials.length > 0 && (
         <section className="teacher-preview">
@@ -469,6 +568,54 @@ const CoursesDetail = React.memo(() => {
         </section>
       )}
 
+      <section className="course-comments-card">
+        <h2 className="course-comments-card__title">Course Discussion</h2>
+        {isAuthenticated ? (
+          <form className="course-comments-card__form" onSubmit={handleCommentSubmit}>
+            <textarea
+              value={commentValue}
+              onChange={(event) => setCommentValue(event.target.value)}
+              placeholder="Share a thought, question, or insight about this course..."
+              rows={3}
+              className="course-comments-card__textarea"
+              aria-label="Add a comment"
+              disabled={commentSubmitting}
+            />
+            <div className="course-comments-card__actions">
+              <button type="submit" className="inline-btn" disabled={commentSubmitting}>
+                {commentSubmitting ? 'Posting...' : 'Post comment'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <p className="course-comments-card__cta">
+            <Link to="/login" className="inline-option-btn">Log in</Link> to join the conversation.
+          </p>
+        )}
+
+        {socialLoading ? (
+          <div className="flex justify-center py-6">
+            <ClipLoader color="#14b8a6" size={24} />
+          </div>
+        ) : comments.length === 0 ? (
+          <p className="course-comments-card__empty">No comments yet. Be the first to start the discussion.</p>
+        ) : (
+          <ul className="course-comments-card__list">
+            {comments.map((item) => (
+              <li key={item.id} className="course-comments-card__item">
+                <div className="course-comments-card__meta">
+                  <span className="course-comments-card__author">{item.userName || 'Learner'}</span>
+                  <time className="course-comments-card__date">
+                    {formatCommentDate(item.createdAt)}
+                  </time>
+                </div>
+                <p className="course-comments-card__text">{item.comment}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {expandedMaterial && (
         <div
           className="teacher-preview-modal"
@@ -488,7 +635,7 @@ const CoursesDetail = React.memo(() => {
                 onClick={() => setExpandedMaterial(null)}
                 aria-label="Close full size preview"
               >
-                �
+                �
               </button>
             </div>
             <h3>{expandedMaterial.title}</h3>

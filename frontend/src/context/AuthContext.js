@@ -9,6 +9,8 @@ import React, {
 import { jwtDecode } from 'jwt-decode';
 import api from '../api';
 
+const NOTEPAD_STORAGE_PREFIX = 'materialViewerNotes:';
+
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
@@ -19,6 +21,13 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('token');
     localStorage.removeItem('user_name');
     localStorage.removeItem('user_image');
+    try {
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith(NOTEPAD_STORAGE_PREFIX))
+        .forEach((key) => localStorage.removeItem(key));
+    } catch (err) {
+      // Ignore storage cleanup errors
+    }
     setUser(null);
     setInitializing(false);
   }, []);
@@ -46,7 +55,11 @@ export const AuthProvider = ({ children }) => {
           name: data.name,
           email: data.email,
           image: data.image,
-          userType: data.userType || decoded.userType || ''
+          userType: data.userType || decoded.userType || '',
+          xp: data.xp ?? 0,
+          badges: Array.isArray(data.badges) ? data.badges : [],
+          streaks: data.streaks || null,
+          dailyGoal: data.dailyGoal || null
         });
       } catch (err) {
         clearSession();

@@ -3,15 +3,20 @@ import { Link, useNavigate } from 'react-router-dom';
 import './App.css';
 import { useAuth } from './context/AuthContext';
 
-const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
+const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000/api';
+const FILE_BASE_URL = (process.env.REACT_APP_FILE_BASE_URL || API_BASE.replace(/\/api$/, '')).replace(/\/$/, '');
 
 const resolveAvatar = (image) => {
   if (!image) return '';
-  if (image.startsWith('http')) return image;
-  if (image.startsWith('/uploaded_files')) {
-    return `${FILE_BASE_URL}${image}`;
+  const normalized = image.replace(/\\/g, '/');
+  if (normalized.startsWith('http')) return normalized;
+  if (normalized.startsWith('/uploaded_files')) {
+    return `${FILE_BASE_URL}${normalized}`;
   }
-  return `${FILE_BASE_URL}/uploaded_files/${image}`;
+  if (normalized.startsWith('uploaded_files')) {
+    return `${FILE_BASE_URL}/${normalized}`;
+  }
+  return `${FILE_BASE_URL}/uploaded_files/${normalized.replace(/^\/+/, '')}`;
 };
 
 function UserHeader() {
@@ -23,6 +28,19 @@ function UserHeader() {
   const avatarSrc = useMemo(() => resolveAvatar(user?.image), [user?.image]);
   const displayName = user?.name || 'Guest';
   const displayRole = user?.userType || (isAuthenticated ? 'Member' : '');
+  const studentMetrics = useMemo(() => {
+    if (!user || user.userType !== 'Student') {
+      return null;
+    }
+    const xp = typeof user.xp === 'number' ? user.xp : 0;
+    const badgeCount = Array.isArray(user.badges) ? user.badges.length : 0;
+    const loginStreak = user.streaks?.login?.count ?? 0;
+    return {
+      xp,
+      badgeCount,
+      loginStreak
+    };
+  }, [user]);
 
   useEffect(() => {
     if (sidebarOpen) {
@@ -94,6 +112,13 @@ function UserHeader() {
               {avatarSrc ? <img src={avatarSrc} alt={`${displayName}'s profile`} /> : <div className="profile-placeholder"></div>}
               <h3>{displayName}</h3>
               <span>{displayRole}</span>
+              {studentMetrics && (
+                <div className="sidebar-metrics" aria-label="Student progress summary">
+                  <span><i className="fas fa-bolt" aria-hidden="true"></i>{studentMetrics.xp}</span>
+                  <span><i className="fas fa-medal" aria-hidden="true"></i>{studentMetrics.badgeCount}</span>
+                  <span><i className="fas fa-fire" aria-hidden="true"></i>{studentMetrics.loginStreak}</span>
+                </div>
+              )}
               <Link to="/profile" className="btn sidebar-profile-btn">View profile</Link>
             </>
           ) : (

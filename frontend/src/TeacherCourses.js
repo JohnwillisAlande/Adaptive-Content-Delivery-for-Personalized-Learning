@@ -189,6 +189,9 @@ function TeacherCourses() {
   const [thumb, setThumb] = useState(null);
   const [thumbPreview, setThumbPreview] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [previewCourse, setPreviewCourse] = useState(null);
+  const [previewMaterial, setPreviewMaterial] = useState(null);
+  const [expandedPdf, setExpandedPdf] = useState(null);
 
   useEffect(() => {
     if (initializing) return;
@@ -309,11 +312,145 @@ function TeacherCourses() {
     navigate(`/courses/${course.id || course._id}`);
   };
 
+  const handleViewMaterial = (course, material) => {
+    setPreviewCourse(course);
+    setPreviewMaterial(material);
+    setExpandedPdf(null);
+  };
+
   const navigateToMaterial = (course, material) => {
     const query = material
       ? `courseId=${course._id}&materialId=${material._id}`
       : `courseId=${course._id}`;
     navigate(`/teacher/materials?${query}`);
+  };
+
+  const closePreview = () => {
+    setPreviewMaterial(null);
+    setPreviewCourse(null);
+    setExpandedPdf(null);
+  };
+
+  const openFullViewer = () => {
+    if (!previewCourse || !previewMaterial) return;
+    const courseIdentifier = previewCourse.id || previewCourse._id;
+    const materialIdentifier = previewMaterial.id || previewMaterial._id;
+    closePreview();
+    navigate(`/courses/${courseIdentifier}/materials/${materialIdentifier}`);
+  };
+
+  const renderPreviewContent = (material) => {
+    if (!material) return null;
+
+    const category = material.annotations?.category || '';
+    const format = material.annotations?.format || '';
+    const fileUrl = resolveAssetUrl(material.fileUrl || material.file);
+    const videoUrl = resolveAssetUrl(material.video || material.videoUrl);
+    const textContent = material.textContent;
+
+    const hasPdf = fileUrl && /\.pdf($|#|\?)/i.test(fileUrl);
+    const hasAudio = fileUrl && /\.(mp3|m4a|aac|wav|ogg)$/i.test(fileUrl);
+    const hasVideoFile = videoUrl && /\.(mp4|webm|ogg)$/i.test(videoUrl);
+
+    if (material.video || category === 'Video' || hasVideoFile) {
+      const source = videoUrl || fileUrl;
+      return source ? (
+        <video controls className="teacher-preview__media">
+          <source src={source} />
+          Your browser does not support the video tag.
+        </video>
+      ) : (
+        <p className="teacher-preview__placeholder">Video unavailable.</p>
+      );
+    }
+
+    if (category === 'Audio' || format === 'Audio' || hasAudio) {
+      const source = fileUrl || videoUrl;
+      return source ? (
+        <audio controls className="teacher-preview__media">
+          <source src={source} />
+          Your browser does not support the audio element.
+        </audio>
+      ) : (
+        <p className="teacher-preview__placeholder">Audio unavailable.</p>
+      );
+    }
+
+    if (hasPdf) {
+      return (
+        <div className="teacher-preview__pdf-wrapper">
+          <iframe
+            title={material.title}
+            src={`${fileUrl}#toolbar=0`}
+            className="teacher-preview__pdf"
+          />
+          <button
+            type="button"
+            className="teacher-preview__expand"
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpandedPdf(fileUrl);
+            }}
+            aria-label="Expand PDF"
+          >
+            {'\u2197'}
+          </button>
+        </div>
+      );
+    }
+
+    if (category === 'Reading' || category === 'Outline' || format === 'Verbal') {
+      if (textContent) {
+        return (
+          <div className="teacher-preview__text">
+            {textContent.split('\n').map((paragraph, idx) => (
+              <p key={`paragraph-${idx}`}>{paragraph}</p>
+            ))}
+          </div>
+        );
+      }
+      if (fileUrl) {
+        return (
+          <a href={fileUrl} target="_blank" rel="noreferrer" className="inline-btn teacher-preview__link">
+            Open document
+          </a>
+        );
+      }
+    }
+
+    if (category === 'Flashcards' && Array.isArray(material.quizData) && material.quizData.length) {
+      return (
+        <ul className="teacher-preview__flashcards">
+          {material.quizData.map((card, index) => (
+            <li key={`card-${index}`}>
+              <strong>{card.question || card.front || `Card ${index + 1}`}</strong>
+              <span>{card.answer || (card.options && card.options[card.correctIndex]) || card.back}</span>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
+    if (category === 'Quiz') {
+      return (
+        <div className="teacher-preview__quiz">
+          <p>This lesson contains a quiz with {material.quizData?.length || 0} questions.</p>
+        </div>
+      );
+    }
+
+    return (
+      <p className="teacher-preview__placeholder">
+        Preview not available.{' '}
+        {fileUrl || videoUrl ? (
+          <a href={fileUrl || videoUrl} target="_blank" rel="noreferrer">
+            Open resource
+          </a>
+        ) : (
+          'Resource missing.'
+        )}
+      </p>
+    );
   };
 
   if (initializing || !isTeacher) {
@@ -460,9 +597,7 @@ function TeacherCourses() {
                   onViewCourse={onViewCourse}
                   onUploadMaterial={(selectedCourse) => navigateToMaterial(selectedCourse)}
                   onEditCourse={handleEdit}
-                  onViewMaterial={(selectedCourse, material) =>
-                    navigate(`/courses/${selectedCourse.id || selectedCourse._id}/materials/${material.id || material._id}`)
-                  }
+                  onViewMaterial={handleViewMaterial}
                   onEditMaterial={(selectedCourse, material) =>
                     navigate(`/teacher/materials?courseId=${selectedCourse._id}&materialId=${material._id}`)
                   }
@@ -471,6 +606,88 @@ function TeacherCourses() {
             </div>
           )}
         </section>
+        {previewMaterial && (
+          <div
+            className="teacher-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={previewMaterial.title}
+            onClick={closePreview}
+          >
+            <div
+              className="teacher-preview-modal__content teacher-preview-modal__content--card"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="teacher-preview-modal__controls">
+                <button
+                  type="button"
+                  className="teacher-preview-modal__close"
+                  onClick={closePreview}
+                  aria-label="Close preview"
+                >
+                  ×
+                </button>
+              </div>
+              <article className="teacher-preview__item teacher-preview__item--single">
+                <header className="teacher-preview__item-header">
+                  <span className="teacher-preview__badge">Lesson {previewMaterial.order ?? '—'}</span>
+                  <div>
+                    <h3>{previewMaterial.title}</h3>
+                    <div className="teacher-preview__meta">
+                      {previewMaterial.annotations?.category && <span>{previewMaterial.annotations.category}</span>}
+                      {previewMaterial.annotations?.format && <span>{previewMaterial.annotations.format}</span>}
+                      {previewMaterial.fileUrl && (
+                        <a href={resolveAssetUrl(previewMaterial.fileUrl)} target="_blank" rel="noreferrer">
+                          Download
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </header>
+                <div className="teacher-preview__body">
+                  {renderPreviewContent(previewMaterial)}
+                </div>
+              </article>
+              <div className="teacher-preview__actions">
+                <button type="button" className="inline-option-btn" onClick={openFullViewer}>
+                  Open full page
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {expandedPdf && (
+          <div
+            className="teacher-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Expanded PDF"
+            onClick={() => setExpandedPdf(null)}
+          >
+            <div
+              className="teacher-preview-modal__content"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="teacher-preview-modal__controls">
+                <button
+                  type="button"
+                  className="teacher-preview-modal__close"
+                  onClick={() => setExpandedPdf(null)}
+                  aria-label="Close full size preview"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="teacher-preview-modal__body">
+                <iframe
+                  title="Expanded lesson preview"
+                  src={`${expandedPdf}#toolbar=1`}
+                  className="teacher-preview-modal__frame"
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );

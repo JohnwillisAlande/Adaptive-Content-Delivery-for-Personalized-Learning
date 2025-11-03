@@ -5,7 +5,8 @@ const path = require('path');
 const multer = require('multer');
 const mongoose = require('mongoose');
 // --- FIXED: Import all models, including the new User types ---
-const { Content, Playlist, Student, Teacher, Admin, Course, Interaction } = require('./models');
+const { Content, Playlist, Student, Teacher, Admin, Course, Interaction, CourseLike, CourseComment } = require('./models');
+const { handleMaterialInteraction, handleCourseProgress } = require('./gamification');
 const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'apex101_secret';
@@ -182,6 +183,88 @@ const collectPlaylistKeysWithPlaylists = (course, fallbackId, playlists = []) =>
   return Array.from(keys).filter(Boolean);
 };
 
+const applyLearningStylePreferences = (materials, learningStyle) => {
+  let visibleItems = [...materials];
+  let hiddenItems = [];
+  if (!learningStyle) {
+    return { visibleItems, hiddenItems };
+  }
+
+  const formatOf = (item) => item.annotations?.format;
+  const typeOf = (item) => item.annotations?.type;
+  const categoryOf = (item) => item.annotations?.category;
+
+  if (learningStyle.is_verbal === 0) {
+    visibleItems.sort((a, b) => {
+      if (formatOf(a) === 'Visual') return -1;
+      if (formatOf(b) === 'Visual') return 1;
+      return 0;
+    });
+    hiddenItems = visibleItems.filter(o => formatOf(o) === 'Verbal');
+    visibleItems = visibleItems.filter(o => formatOf(o) !== 'Verbal');
+  } else {
+    visibleItems.sort((a, b) => {
+      if (formatOf(a) === 'Verbal') return -1;
+      if (formatOf(b) === 'Verbal') return 1;
+      return 0;
+    });
+    hiddenItems = visibleItems.filter(o => formatOf(o) === 'Visual');
+    visibleItems = visibleItems.filter(o => formatOf(o) !== 'Visual');
+  }
+
+  if (learningStyle.is_intuitive === 0) {
+    visibleItems.sort((a, b) => {
+      if (typeOf(a) === 'Concrete') return -1;
+      if (typeOf(b) === 'Concrete') return 1;
+      return 0;
+    });
+  } else {
+    visibleItems.sort((a, b) => {
+      if (typeOf(a) === 'Abstract') return -1;
+      if (typeOf(b) === 'Abstract') return 1;
+      return 0;
+    });
+  }
+
+  if (learningStyle.is_reflective === 0) {
+    visibleItems.sort((a, b) => {
+      if (categoryOf(a) === 'Exercise') return -1;
+      if (categoryOf(b) === 'Exercise') return 1;
+      return 0;
+    });
+    const examples = visibleItems.filter(o => categoryOf(o) === 'Example');
+    const nonExamples = visibleItems.filter(o => categoryOf(o) !== 'Example');
+    const examplesToHide = examples.slice(Math.floor(examples.length / 2));
+    const examplesToShow = examples.slice(0, Math.floor(examples.length / 2));
+    visibleItems = nonExamples.concat(examplesToShow);
+    hiddenItems = hiddenItems.concat(examplesToHide);
+  } else {
+    visibleItems.sort((a, b) => {
+      if (categoryOf(a) === 'Example') return -1;
+      if (categoryOf(b) === 'Example') return 1;
+      return 0;
+    });
+    const exercises = visibleItems.filter(o => categoryOf(o) === 'Exercise');
+    const nonExercises = visibleItems.filter(o => categoryOf(o) !== 'Exercise');
+    const exercisesToHide = exercises.slice(Math.floor(exercises.length / 2));
+    const exercisesToShow = exercises.slice(0, Math.floor(exercises.length / 2));
+    visibleItems = nonExercises.concat(exercisesToShow);
+    hiddenItems = hiddenItems.concat(exercisesToHide);
+  }
+
+  if (learningStyle.is_global === 1) {
+    visibleItems.sort((a, b) => {
+      const isOutlineA = categoryOf(a) === 'Outline' || categoryOf(a) === 'Concept Map';
+      const isOutlineB = categoryOf(b) === 'Outline' || categoryOf(b) === 'Concept Map';
+      if (isOutlineA) return -1;
+      if (isOutlineB) return 1;
+      return 0;
+    });
+  }
+
+  return { visibleItems, hiddenItems };
+};
+
 const computeCourseProgress = async (courseId, userId, options = {}) => {
   const {
     playlistIds = [courseId],
@@ -305,6 +388,79 @@ router.get('/student/my', async (req, res) => {
   } catch (err) {
     console.error('Student courses fetch error:', err);
     res.status(500).json({ error: 'Failed to load enrolled courses' });
+  }
+});
+
+router.get('/student/for-you', async (req, res) => {
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (user.constructor?.modelName !== 'Student') {
+      return res.status(403).json({ error: 'Students only' });
+    }
+
+    const enrolled = Array.isArray(user.enrolledCourses) ? user.enrolledCourses.filter(Boolean) : [];
+    if (!enrolled.length) {
+      return res.json([]);
+    }
+
+    const uniqueCourseIds = Array.from(new Set(enrolled));
+    const recommendations = [];
+
+    for (const courseId of uniqueCourseIds) {
+      const courseLookup = [{ id: courseId }];
+      if (mongoose.Types.ObjectId.isValid(courseId)) {
+        courseLookup.push({ _id: courseId });
+      }
+      const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+      if (!storedCourse) continue;
+
+      const courseSummary = buildCourseSummary(courseId, storedCourse);
+      const playlistQuery = [{ id: courseId }];
+      if (mongoose.Types.ObjectId.isValid(courseId)) {
+        playlistQuery.push({ _id: courseId });
+      }
+      if (storedCourse.playlistId && mongoose.Types.ObjectId.isValid(storedCourse.playlistId)) {
+        playlistQuery.push({ _id: storedCourse.playlistId });
+      }
+      const playlists = await Playlist.find({ $or: playlistQuery }).lean();
+      const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
+      if (!playlistKeys.length) {
+        playlistKeys.push(courseId);
+      }
+
+      const baseFilter = { playlist_id: { $in: playlistKeys } };
+      const visibilityFilter = { ...baseFilter, ...visibleStatusFilter };
+      const materialsRaw = await Content.find(visibilityFilter).sort({ order: 1, date: -1 }).lean();
+      if (!materialsRaw.length) continue;
+
+      const { visibleItems } = applyLearningStylePreferences(materialsRaw, user.learningStyle || null);
+      const recommendedMaterials = visibleItems.slice(0, 4).map(formatMaterial);
+      if (!recommendedMaterials.length) continue;
+
+      const coursePayload = {
+        id: courseSummary.id,
+        title: courseSummary.title,
+        subtitle: courseSummary.subtitle,
+        description: courseSummary.description,
+        thumb: courseSummary.thumb,
+        thumbUrl: courseSummary.thumb ? toPublicPath(courseSummary.thumb) : ''
+      };
+
+      recommendedMaterials.forEach((material) => {
+        recommendations.push({
+          course: coursePayload,
+          material
+        });
+      });
+    }
+
+    res.json(recommendations.slice(0, 20));
+  } catch (err) {
+    console.error('Student recommendations fetch error:', err);
+    res.status(500).json({ error: 'Failed to load personalized materials' });
   }
 });
 
@@ -1136,30 +1292,66 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
     const timeSpentSeconds = Math.max(0, Number(req.body.timeSpentSeconds) || 0);
     const completed = req.body.completed === undefined ? true : Boolean(req.body.completed);
 
-    await Interaction.findOneAndUpdate(
-      { user_id: user._id.toString(), content_id: material.id },
-      {
-        user_id: user._id.toString(),
-        content_id: material.id,
-        playlist_id: material.playlist_id,
-        annotations: {
-          format: material.annotations?.format || 'Visual',
-          type: material.annotations?.type || 'Abstract',
-          category: material.annotations?.category || 'Video',
-          order: material.order ?? 0
-        },
-        timeSpentSeconds,
-        completed,
-        timestamp: new Date()
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
+    const interactionFilter = { user_id: user._id.toString(), content_id: material.id };
+    const existingInteraction = await Interaction.findOne(interactionFilter).lean();
+
+    const annotations = {
+      format: material.annotations?.format || 'Visual',
+      type: material.annotations?.type || 'Abstract',
+      category: material.annotations?.category || 'Video',
+      order: material.order ?? 0
+    };
+
+    const interactionPayload = {
+      user_id: user._id.toString(),
+      content_id: material.id,
+      playlist_id: material.playlist_id,
+      annotations,
+      timeSpentSeconds,
+      completed,
+      timestamp: new Date()
+    };
+
+    if (!existingInteraction) {
+      await Interaction.create(interactionPayload);
+    } else {
+      await Interaction.updateOne(interactionFilter, interactionPayload);
+    }
+
+    const {
+      xpAwarded,
+      totalXp,
+      badgesAwarded: interactionBadges,
+      streaks,
+      dailyGoal
+    } = await handleMaterialInteraction({
+      studentDoc: user,
+      material,
+      completed,
+      existingInteraction
+    });
 
     const progress = await computeCourseProgress(courseId, user._id.toString(), {
       playlistIds: playlistKeys
     });
+
+    const courseTitle = storedCourse?.title || courseId;
+    const progressBadges = await handleCourseProgress({
+      studentDoc: user,
+      courseId,
+      courseTitle,
+      progressPercent: progress.percent
+    });
+
+    const badgesAwarded = [...(interactionBadges || []), ...(progressBadges || [])];
+
     res.json({
       message: 'Interaction recorded',
+      xpAwarded,
+      totalXp,
+      streaks,
+      dailyGoal,
+      badgesAwarded,
       progress: {
         percent: progress.percent,
         totalMaterials: progress.totalMaterials,
@@ -1255,93 +1447,8 @@ router.get('/:courseId', async (req, res) => {
         });
       }
 
-    let visibleItems = [...filteredMaterials];
-    let hiddenItems = [];
     const learningStyle = isStudent ? user?.learningStyle : null;
-
-    if (learningStyle) {
-      if (learningStyle.is_verbal === 0) {
-        visibleItems.sort((a, b) => {
-          const formatA = a.annotations?.format;
-          const formatB = b.annotations?.format;
-          if (formatA === 'Visual') return -1;
-          if (formatB === 'Visual') return 1;
-          return 0;
-        });
-        hiddenItems = visibleItems.filter(o => o.annotations?.format === 'Verbal');
-        visibleItems = visibleItems.filter(o => o.annotations?.format !== 'Verbal');
-      } else {
-        visibleItems.sort((a, b) => {
-          const formatA = a.annotations?.format;
-          const formatB = b.annotations?.format;
-          if (formatA === 'Verbal') return -1;
-          if (formatB === 'Verbal') return 1;
-          return 0;
-        });
-        hiddenItems = visibleItems.filter(o => o.annotations?.format === 'Visual');
-        visibleItems = visibleItems.filter(o => o.annotations?.format !== 'Visual');
-      }
-
-      if (learningStyle.is_intuitive === 0) {
-        visibleItems.sort((a, b) => {
-          const typeA = a.annotations?.type;
-          const typeB = b.annotations?.type;
-          if (typeA === 'Concrete') return -1;
-          if (typeB === 'Concrete') return 1;
-          return 0;
-        });
-      } else {
-        visibleItems.sort((a, b) => {
-          const typeA = a.annotations?.type;
-          const typeB = b.annotations?.type;
-          if (typeA === 'Abstract') return -1;
-          if (typeB === 'Abstract') return 1;
-          return 0;
-        });
-      }
-
-      if (learningStyle.is_reflective === 0) {
-        visibleItems.sort((a, b) => {
-          const categoryA = a.annotations?.category;
-          const categoryB = b.annotations?.category;
-          if (categoryA === 'Exercise') return -1;
-          if (categoryB === 'Exercise') return 1;
-          return 0;
-        });
-        const examples = visibleItems.filter(o => o.annotations?.category === 'Example');
-        const nonExamples = visibleItems.filter(o => o.annotations?.category !== 'Example');
-        const examplesToHide = examples.slice(Math.floor(examples.length / 2));
-        const examplesToShow = examples.slice(0, Math.floor(examples.length / 2));
-        visibleItems = nonExamples.concat(examplesToShow);
-        hiddenItems = hiddenItems.concat(examplesToHide);
-      } else {
-        visibleItems.sort((a, b) => {
-          const categoryA = a.annotations?.category;
-          const categoryB = b.annotations?.category;
-          if (categoryA === 'Example') return -1;
-          if (categoryB === 'Example') return 1;
-          return 0;
-        });
-        const exercises = visibleItems.filter(o => o.annotations?.category === 'Exercise');
-        const nonExercises = visibleItems.filter(o => o.annotations?.category !== 'Exercise');
-        const exercisesToHide = exercises.slice(Math.floor(exercises.length / 2));
-        const exercisesToShow = exercises.slice(0, Math.floor(exercises.length / 2));
-        visibleItems = nonExercises.concat(exercisesToShow);
-        hiddenItems = hiddenItems.concat(exercisesToHide);
-      }
-
-      if (learningStyle.is_global === 1) {
-        visibleItems.sort((a, b) => {
-          const categoryA = a.annotations?.category;
-          const categoryB = b.annotations?.category;
-          const isOutlineA = categoryA === 'Outline' || categoryA === 'Concept Map';
-          const isOutlineB = categoryB === 'Outline' || categoryB === 'Concept Map';
-          if (isOutlineA) return -1;
-          if (isOutlineB) return 1;
-          return 0;
-        });
-      }
-    }
+    const { visibleItems, hiddenItems } = applyLearningStylePreferences(filteredMaterials, learningStyle);
 
     const start = (page - 1) * PAGE_SIZE;
     const paginatedVisibleItems = visibleItems.slice(start, start + PAGE_SIZE);
@@ -1403,6 +1510,110 @@ router.get('/:courseId', async (req, res) => {
   }
 });
 
+router.get('/:courseId/social', async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const { user } = await getRequestContext(req);
+    const userId = user?._id ? user._id.toString() : null;
+
+    const [likesCount, comments] = await Promise.all([
+      CourseLike.countDocuments({ courseId }),
+      CourseComment.find({ courseId }).sort({ createdAt: -1 }).limit(100).lean()
+    ]);
+
+    const hasLiked = userId
+      ? await CourseLike.exists({ courseId, userId })
+      : false;
+
+    const serializedComments = comments.map((comment) => ({
+      id: comment._id.toString(),
+      courseId: comment.courseId,
+      userId: comment.userId?.toString(),
+      userName: comment.userName || 'Learner',
+      comment: comment.comment,
+      createdAt: comment.createdAt
+    }));
+
+    res.json({
+      likesCount,
+      hasLiked: Boolean(hasLiked),
+      comments: serializedComments
+    });
+  } catch (err) {
+    console.error('Course social fetch error:', err);
+    res.status(500).json({ error: 'Failed to load course feedback' });
+  }
+});
+
+router.post('/:courseId/like', async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user?._id) {
+      return res.status(401).json({ error: 'Login required to like a course' });
+    }
+
+    const userId = user._id;
+    const existing = await CourseLike.findOne({ courseId, userId });
+    let liked;
+    if (existing) {
+      await existing.deleteOne();
+      liked = false;
+    } else {
+      await CourseLike.create({ courseId, userId });
+      liked = true;
+    }
+
+    const likesCount = await CourseLike.countDocuments({ courseId });
+    res.json({ liked, likesCount });
+  } catch (err) {
+    if (err.code === 11000) {
+      const likesCount = await CourseLike.countDocuments({ courseId });
+      return res.json({ liked: true, likesCount });
+    }
+    console.error('Course like error:', err);
+    res.status(500).json({ error: 'Failed to update like' });
+  }
+});
+
+router.post('/:courseId/comments', async (req, res) => {
+  const { courseId } = req.params;
+  const text = (req.body?.comment || '').trim();
+  if (!text) {
+    return res.status(400).json({ error: 'Comment cannot be empty' });
+  }
+  if (text.length > 1000) {
+    return res.status(400).json({ error: 'Comment is too long' });
+  }
+
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user?._id) {
+      return res.status(401).json({ error: 'Login required to comment' });
+    }
+
+    const userName = user.name || user.email || 'Learner';
+    const created = await CourseComment.create({
+      courseId,
+      userId: user._id,
+      userName,
+      comment: text
+    });
+
+    res.status(201).json({
+      id: created._id.toString(),
+      courseId: created.courseId,
+      userId: created.userId.toString(),
+      userName: created.userName,
+      comment: created.comment,
+      createdAt: created.createdAt
+    });
+  } catch (err) {
+    console.error('Course comment error:', err);
+    res.status(500).json({ error: 'Failed to submit comment' });
+  }
+});
+
 // POST /api/enroll/:courseId - Enroll user in course
 router.post('/enroll/:courseId', async (req, res) => {
   const { courseId } = req.params;
@@ -1430,3 +1641,6 @@ router.post('/enroll/:courseId', async (req, res) => {
 });
 
 module.exports = router;
+
+
+

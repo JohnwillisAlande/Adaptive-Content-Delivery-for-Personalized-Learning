@@ -68,6 +68,50 @@ const LikeSchema = new mongoose.Schema({
   content_id: { type: String, required: true }
 });
 
+const BadgeSchema = new mongoose.Schema(
+  {
+    badgeId: { type: String, required: true, unique: true },
+    title: { type: String, required: true },
+    description: { type: String, default: '' },
+    icon: { type: String, default: 'fa-medal' },
+    criteria: { type: mongoose.Schema.Types.Mixed, default: {} },
+    active: { type: Boolean, default: true }
+  },
+  { timestamps: true }
+);
+
+const StudentBadgeSchema = new mongoose.Schema(
+  {
+    studentId: { type: mongoose.Types.ObjectId, ref: 'Student', required: true, index: true },
+    badgeId: { type: String, required: true },
+    awardedAt: { type: Date, default: Date.now },
+    meta: { type: mongoose.Schema.Types.Mixed, default: {} }
+  },
+  { timestamps: true }
+);
+
+StudentBadgeSchema.index({ studentId: 1, badgeId: 1 }, { unique: true });
+
+const CourseLikeSchema = new mongoose.Schema(
+  {
+    courseId: { type: String, required: true, index: true },
+    userId: { type: mongoose.Types.ObjectId, required: true, index: true }
+  },
+  { timestamps: true }
+);
+
+CourseLikeSchema.index({ courseId: 1, userId: 1 }, { unique: true });
+
+const CourseCommentSchema = new mongoose.Schema(
+  {
+    courseId: { type: String, required: true, index: true },
+    userId: { type: mongoose.Types.ObjectId, required: true },
+    userName: { type: String, default: '' },
+    comment: { type: String, required: true, trim: true, maxlength: 1000 }
+  },
+  { timestamps: true }
+);
+
 const PlaylistSchema = new mongoose.Schema({
   id: { type: String, default: null },
   tutor_id: { type: String, default: null },
@@ -116,6 +160,25 @@ const StudentSchema = new mongoose.Schema({
   email: { type: String, required: true, lowercase: true },
   password: { type: String, required: true },
   image: { type: String },
+  xp: { type: Number, default: 0 },
+  lastLoginXpAt: { type: Date, default: null },
+  loginStreak: {
+    count: { type: Number, default: 0 },
+    longest: { type: Number, default: 0 },
+    lastDate: { type: Date, default: null }
+  },
+  lessonStreak: {
+    count: { type: Number, default: 0 },
+    longest: { type: Number, default: 0 },
+    lastDate: { type: Date, default: null }
+  },
+  dailyGoal: {
+    lessonsTarget: { type: Number, default: 1 },
+    lessonsCompletedToday: { type: Number, default: 0 },
+    loginsTarget: { type: Number, default: 1 },
+    loginsCompletedToday: { type: Number, default: 0 },
+    lastResetAt: { type: Date, default: null }
+  },
   enrolledCourses: [{ type: String }], // Array of course IDs
   googleId: { type: String },
   isGoogleAuth: { type: Boolean, default: false },
@@ -212,6 +275,10 @@ module.exports = {
   Contact: mongoose.model('Contact', ContactSchema),
   Content: mongoose.model('Content', ContentSchema),
   Like: mongoose.model('Like', LikeSchema),
+  Badge: mongoose.model('Badge', BadgeSchema),
+  StudentBadge: mongoose.model('StudentBadge', StudentBadgeSchema),
+  CourseLike: mongoose.model('CourseLike', CourseLikeSchema),
+  CourseComment: mongoose.model('CourseComment', CourseCommentSchema),
   Course: mongoose.model('Course', CourseSchema),
   Playlist: mongoose.model('Playlist', PlaylistSchema),
   Tutor: mongoose.model('Tutor', TutorSchema),

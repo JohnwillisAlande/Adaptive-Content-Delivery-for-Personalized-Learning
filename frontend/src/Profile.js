@@ -9,14 +9,17 @@ import './App.css';
 import api from './api';
 import { useAuth } from './context/AuthContext';
 
-const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
+const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000/api';
+const FILE_BASE_URL = (process.env.REACT_APP_FILE_BASE_URL || API_BASE.replace(/\/api$/, '')).replace(/\/$/, '');
 const ILS_URL = 'https://learningstyles.webtools.ncsu.edu/';
 
 const resolveImage = (image) => {
   if (!image) return null;
-  if (image.startsWith('http')) return image;
-  if (image.startsWith('/uploaded_files')) return `${FILE_BASE_URL}${image}`;
-  return `${FILE_BASE_URL}/uploaded_files/${image}`;
+  const normalized = image.replace(/\\/g, '/');
+  if (normalized.startsWith('http')) return normalized;
+  if (normalized.startsWith('/uploaded_files')) return `${FILE_BASE_URL}${normalized}`;
+  if (normalized.startsWith('uploaded_files')) return `${FILE_BASE_URL}/${normalized}`;
+  return `${FILE_BASE_URL}/uploaded_files/${normalized.replace(/^\/+/, '')}`;
 };
 
 const createDefaultStyleSelection = () => ({
@@ -101,8 +104,9 @@ function Profile() {
       setLoading(true);
       try {
         const { data } = await api.get('/profile');
-        setProfile(data);
-        setForm(f => ({ ...f, name: data.name }));
+        const withBadges = { ...data, badges: Array.isArray(data.badges) ? data.badges : [] };
+        setProfile(withBadges);
+        setForm(f => ({ ...f, name: withBadges.name }));
         if (data.learningStyle) {
           setStyleSelection(translateStyleFromDB(data.learningStyle));
         } else {
@@ -217,6 +221,17 @@ function Profile() {
     window.open(ILS_URL, '_blank', 'noopener,noreferrer');
   };
 
+  const loginStreakCount = profile?.streaks?.login?.count ?? 0;
+  const loginStreakBest = profile?.streaks?.login?.longest ?? loginStreakCount;
+  const lessonStreakCount = profile?.streaks?.lesson?.count ?? 0;
+  const lessonStreakBest = profile?.streaks?.lesson?.longest ?? lessonStreakCount;
+  const dailyGoalState = profile?.dailyGoal || null;
+  const lessonsCompletedToday = dailyGoalState?.lessonsCompletedToday ?? 0;
+  const lessonsTarget = dailyGoalState?.lessonsTarget ?? 1;
+  const loginsCompletedToday = dailyGoalState?.loginsCompletedToday ?? 0;
+  const loginsTarget = dailyGoalState?.loginsTarget ?? 1;
+  const goalMet = Boolean(dailyGoalState?.lessonGoalMet && dailyGoalState?.loginGoalMet);
+
   if (loading) {
     return <div className="flex justify-center py-10"><ClipLoader color="#14b8a6" size={32} /></div>;
   }
@@ -326,6 +341,9 @@ function Profile() {
               <span className="profile-card__role">{profile.userType} account</span>
               <span className="profile-card__name">{displayName}</span>
               <span className="profile-card__email">{profile.email}</span>
+              {typeof profile.xp === 'number' && (
+                <span className="profile-card__xp">{profile.xp} XP</span>
+              )}
             </div>
           </div>
 
@@ -414,6 +432,39 @@ function Profile() {
             </div>
           </div>
 
+          {profile.userType === 'Student' && (
+            <div className="profile-card__streaks">
+              <div className="profile-card__streak-box">
+                <span className="profile-card__streak-label">Login streak</span>
+                <span className="profile-card__streak-count">{loginStreakCount} day{loginStreakCount === 1 ? '' : 's'}</span>
+                <span className="profile-card__streak-sub">Best streak: {loginStreakBest}</span>
+                <span className="profile-card__goal-progress">
+                  Today: {loginsCompletedToday}/{loginsTarget} login{loginsTarget === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="profile-card__streak-box">
+                <span className="profile-card__streak-label">Lesson streak</span>
+                <span className="profile-card__streak-count">{lessonStreakCount} day{lessonStreakCount === 1 ? '' : 's'}</span>
+                <span className="profile-card__streak-sub">Best streak: {lessonStreakBest}</span>
+                <span className="profile-card__goal-progress">
+                  Today: {lessonsCompletedToday}/{lessonsTarget} lesson{lessonsTarget === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="profile-card__streak-box">
+                <span className="profile-card__streak-label">Daily goals</span>
+                <span className="profile-card__streak-count">
+                  {goalMet ? 'Goal complete' : 'Keep going'}
+                </span>
+                <span className="profile-card__streak-sub">
+                  Stay consistent to build your streaks and unlock more badges.
+                </span>
+                <span className={`profile-card__goal-pill${goalMet ? ' is-complete' : ''}`}>
+                  {goalMet ? 'All targets met today' : 'Progress saved for today'}
+                </span>
+              </div>
+            </div>
+          )}
+
           <div className="profile-card__style">
             <div className="profile-card__style-header">
               <h2>Learning style</h2>
@@ -442,6 +493,31 @@ function Profile() {
                   ? "You haven't saved a learning style yet. Click + to add yours."
                   : 'No learning style has been recorded for this account.'}
               </p>
+            )}
+          </div>
+
+          <div className="profile-card__badges">
+            <div className="profile-card__badges-header">
+              <h2>Badges</h2>
+            </div>
+            {Array.isArray(profile.badges) && profile.badges.length ? (
+              <ul className="profile-card__badge-list">
+                {profile.badges.map(badge => (
+                  <li key={`${badge.badgeId}-${badge.awardedAt || badge.title}`}>
+                    <span className="profile-card__badge-icon">
+                      <i className={badge.icon || 'fas fa-medal'} aria-hidden="true" />
+                    </span>
+                    <div className="profile-card__badge-copy">
+                      <span className="profile-card__badge-title">{badge.title}</span>
+                      {badge.description ? (
+                        <span className="profile-card__badge-desc">{badge.description}</span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="profile-card__badges-empty">No badges earned yet. Keep learning to unlock achievements!</p>
             )}
           </div>
 
