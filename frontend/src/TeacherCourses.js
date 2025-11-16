@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { ClipLoader } from 'react-spinners';
+import { FaExclamationTriangle } from 'react-icons/fa';
 import api from './api';
 import { useAuth } from './context/AuthContext';
 
@@ -138,38 +139,40 @@ const TeacherCourseCard = ({
             No materials yet. Upload one to get started.
           </div>
         ) : (
-          course.materials.map((material) => (
-            <div className="teacher-course-material" key={material._id}>
-              <div className="teacher-course-material__meta">
-                <strong>{material.title}</strong>
-                <span>
-                  Lesson {material.order} - {material.annotations?.category || 'Material'}
-                </span>
+          <div className="teacher-course-materials__scroll">
+            {course.materials.map((material) => (
+              <div className="teacher-course-material" key={material._id}>
+                <div className="teacher-course-material__meta">
+                  <strong>{material.title}</strong>
+                  <span>
+                    Lesson {material.order} - {material.annotations?.category || 'Material'}
+                  </span>
+                </div>
+                <div className="teacher-course-material__actions">
+                  <button
+                    type="button"
+                    className="inline-option-btn"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onViewMaterial(course, material);
+                    }}
+                  >
+                    View
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-option-btn"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onEditMaterial(course, material);
+                    }}
+                  >
+                    Edit
+                  </button>
+                </div>
               </div>
-              <div className="teacher-course-material__actions">
-                <button
-                  type="button"
-                  className="inline-option-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onViewMaterial(course, material);
-                  }}
-                >
-                  View
-                </button>
-                <button
-                  type="button"
-                  className="inline-option-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onEditMaterial(course, material);
-                  }}
-                >
-                  Edit
-                </button>
-              </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -192,6 +195,8 @@ function TeacherCourses() {
   const [previewCourse, setPreviewCourse] = useState(null);
   const [previewMaterial, setPreviewMaterial] = useState(null);
   const [expandedPdf, setExpandedPdf] = useState(null);
+  const [dangerPrompt, setDangerPrompt] = useState(null);
+  const [dangerLoading, setDangerLoading] = useState(false);
 
   useEffect(() => {
     if (initializing) return;
@@ -220,6 +225,34 @@ function TeacherCourses() {
     setThumb(null);
     setThumbPreview('');
     setEditingId(null);
+  };
+
+  const requestCourseDelete = () => {
+    if (!editingId) return;
+    setDangerPrompt({ type: 'course', courseId: editingId });
+  };
+
+  const closeDangerPrompt = () => {
+    if (dangerLoading) return;
+    setDangerPrompt(null);
+  };
+
+  const handleDangerConfirm = async () => {
+    if (!dangerPrompt) return;
+    setDangerLoading(true);
+    try {
+      if (dangerPrompt.type === 'course') {
+        await api.delete(`/courses/teacher/${dangerPrompt.courseId}`);
+        toast.success('Course deleted');
+        resetForm();
+        fetchCourses();
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to delete course');
+    } finally {
+      setDangerLoading(false);
+      setDangerPrompt(null);
+    }
   };
 
   const handleChange = (event) => {
@@ -473,7 +506,7 @@ function TeacherCourses() {
           </div>
         </section>
 
-        <section className="card animate-in">
+        <section className="card animate-in teacher-course-form-section">
           <form
             onSubmit={handleSubmit}
             encType="multipart/form-data"
@@ -575,9 +608,51 @@ function TeacherCourses() {
                   Cancel
                 </button>
               )}
+              {editingId && (
+                <button
+                  type="button"
+                  className="delete-btn"
+                  onClick={requestCourseDelete}
+                  disabled={saving}
+                >
+                  Delete course
+                </button>
+              )}
             </div>
           </form>
         </section>
+        {dangerPrompt?.type === 'course' && (
+          <div className="danger-modal" role="dialog" aria-modal="true">
+            <div className="danger-modal__card">
+              <div className="danger-modal__icon">
+                <FaExclamationTriangle />
+              </div>
+              <h3 className="danger-modal__title">Delete this course?</h3>
+              <p className="danger-modal__copy">
+                This will permanently delete the course and every material associated with it. This action cannot be
+                undone.
+              </p>
+              <div className="danger-modal__actions">
+                <button
+                  type="button"
+                  className="delete-btn"
+                  onClick={handleDangerConfirm}
+                  disabled={dangerLoading}
+                >
+                  {dangerLoading ? <ClipLoader color="#fff" size={18} /> : 'Delete course'}
+                </button>
+                <button
+                  type="button"
+                  className="option-btn"
+                  onClick={closeDangerPrompt}
+                  disabled={dangerLoading}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <section className="card animate-in teacher-course-list">
           {loading ? (

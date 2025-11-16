@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { FaSync } from 'react-icons/fa';
+import { ClipLoader } from 'react-spinners';
+import { toast } from 'react-toastify';
 import './App.css';
 import { useAuth } from './context/AuthContext';
+import api from './api';
 
 const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:5000/api';
 const FILE_BASE_URL = (process.env.REACT_APP_FILE_BASE_URL || API_BASE.replace(/\/api$/, '')).replace(/\/$/, '');
@@ -22,8 +26,10 @@ const resolveAvatar = (image) => {
 function UserHeader() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('dark-mode') === 'enabled');
+  const [isPredicting, setIsPredicting] = useState(false);
   const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const avatarSrc = useMemo(() => resolveAvatar(user?.image), [user?.image]);
   const displayName = user?.name || 'Guest';
@@ -41,6 +47,28 @@ function UserHeader() {
       loginStreak
     };
   }, [user]);
+
+  const navLinks = useMemo(() => {
+    const links = [
+      { to: '/home', label: 'Home' },
+      { to: '/courses', label: 'Courses' }
+    ];
+    if (user?.userType === 'Student') {
+      links.push({ to: '/student/courses', label: 'My Courses' });
+    }
+    if (user?.userType === 'Teacher') {
+      links.push(
+        { to: '/teacher/courses', label: 'My Courses' },
+        { to: '/teacher/materials', label: 'Upload' }
+      );
+    }
+    links.push({ to: '/teachers', label: 'Teachers' });
+    if (user?.userType === 'Admin') {
+      links.push({ to: '/students', label: 'Students' });
+    }
+    links.push({ to: '/about', label: 'About' }, { to: '/contact', label: 'Contact' });
+    return links;
+  }, [user?.userType]);
 
   useEffect(() => {
     if (sidebarOpen) {
@@ -61,45 +89,95 @@ function UserHeader() {
     }
   }, [darkMode]);
 
+  const handlePredict = async () => {
+    if (!isAuthenticated) {
+      toast.error('Please log in to update your learning style.');
+      return;
+    }
+    setIsPredicting(true);
+    try {
+      await api.post('/predict-style');
+      toast.success('Your learning style has been updated!');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update your learning style.');
+    } finally {
+      setIsPredicting(false);
+    }
+  };
+
   return (
     <>
-      <header className="header">
-        <section className="flex">
-          <Link to={isAuthenticated ? '/home' : '/login'} className="logo">ApexLearn</Link>
-          <form className="search-form">
-            <input type="text" name="search_course" placeholder="Search courses..." maxLength={100} />
-            <button type="submit" className="fas fa-search" name="search_course_btn"></button>
-          </form>
-          <div className="icons">
-            <div id="menu-btn" className="fas fa-bars" onClick={() => setSidebarOpen(!sidebarOpen)}></div>
-            <div id="search-btn" className="fas fa-search"></div>
-            <div
-              id="user-btn"
-              className="fas fa-user"
-              onClick={() => navigate(isAuthenticated ? '/profile' : '/login')}
-              role="button"
-              tabIndex={0}
-            ></div>
-            <div id="toggle-btn" className={`fas ${darkMode ? 'fa-moon' : 'fa-sun'}`} onClick={() => setDarkMode((prev) => !prev)}></div>
-          </div>
-          <div className="profile">
+      <header className="floating-nav" aria-label="Primary navigation">
+        <div className="floating-nav__shell">
+          <Link to={isAuthenticated ? '/home' : '/login'} className="floating-nav__logo">
+            ApexLearn
+          </Link>
+          <nav className="floating-nav__menu">
+            {navLinks.map((link) => {
+              const isActive = location.pathname.startsWith(link.to);
+              return (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  className={`floating-nav__link${isActive ? ' is-active' : ''}`}
+                >
+                  {link.label}
+                </Link>
+              );
+            })}
+          </nav>
+          <div className="floating-nav__actions">
+            <button
+              type="button"
+              className="floating-nav__icon"
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              aria-label="Toggle sidebar menu"
+            >
+              <i className="fas fa-bars" />
+            </button>
+            <button
+              type="button"
+              className="floating-nav__icon"
+              onClick={() => setDarkMode((prev) => !prev)}
+              aria-label="Toggle theme"
+            >
+              <i className={`fas ${darkMode ? 'fa-moon' : 'fa-sun'}`} />
+            </button>
+            {isAuthenticated && user?.userType === 'Student' && (
+              <button
+                type="button"
+                className="floating-nav__cta floating-nav__cta--ghost floating-nav__cta--sync"
+                onClick={handlePredict}
+                disabled={isPredicting}
+                aria-label="Update my learning style"
+              >
+                {isPredicting ? (
+                  <ClipLoader size={16} color="#14b8a6" />
+                ) : (
+                  <FaSync />
+                )}
+              </button>
+            )}
             {isAuthenticated ? (
-              <>
-                {avatarSrc ? <img src={avatarSrc} alt={`${displayName}'s profile`} /> : <div className="profile-placeholder"></div>}
-                <h3>{displayName}</h3>
-                <span>{displayRole}</span>
-              </>
+              <Link to="/profile" className="floating-nav__cta floating-nav__cta--outline">
+                {avatarSrc ? (
+                  <img src={avatarSrc} alt="Profile" />
+                ) : (
+                  <span>{displayName.split(' ')[0]}</span>
+                )}
+              </Link>
             ) : (
               <>
-                <h3 className="title">Please login or register</h3>
-                <div className="flex-btn" style={{ paddingTop: '.5rem' }}>
-                  <Link to="/login" className="option-btn">Login</Link>
-                  <Link to="/register" className="option-btn">Register</Link>
-                </div>
+                <Link to="/login" className="floating-nav__cta floating-nav__cta--ghost">
+                  Log In
+                </Link>
+                <Link to="/register" className="floating-nav__cta floating-nav__cta--solid">
+                  Sign Up
+                </Link>
               </>
             )}
           </div>
-        </section>
+        </div>
       </header>
 
       <div className={`side-bar${sidebarOpen ? '' : ' active'}`} style={{ left: sidebarOpen ? 0 : '-31rem' }}>

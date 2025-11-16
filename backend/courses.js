@@ -477,6 +477,32 @@ const deleteFileIfExists = async (filename) => {
 };
 
 const isLocalAsset = (value) => Boolean(value && !value.startsWith('http'));
+
+const cleanupMaterialAssets = async (material) => {
+  if (!material) return;
+  if (isLocalAsset(material.thumb)) await deleteFileIfExists(material.thumb);
+  if (isLocalAsset(material.video)) await deleteFileIfExists(material.video);
+  if (isLocalAsset(material.fileUrl)) await deleteFileIfExists(material.fileUrl);
+};
+
+const deletePlaylistsByKeys = async (keys = []) => {
+  const normalized = Array.from(
+    new Set(
+      (keys || [])
+        .map((key) => (key ? key.toString() : ''))
+        .filter(Boolean)
+    )
+  );
+  if (!normalized.length) return;
+  const query = [];
+  const objectIds = normalized.filter((key) => mongoose.Types.ObjectId.isValid(key));
+  if (objectIds.length) query.push({ _id: { $in: objectIds } });
+  const slugIds = normalized.filter((key) => !mongoose.Types.ObjectId.isValid(key));
+  if (slugIds.length) query.push({ id: { $in: slugIds } });
+  if (query.length) {
+    await Playlist.deleteMany({ $or: query });
+  }
+};
 const toPublicPath = (value) => {
   if (!value) return '';
   return value.startsWith('http') ? value : `/uploaded_files/${value}`;
@@ -703,6 +729,45 @@ router.put('/teacher/:courseId', upload.single('thumb'), async (req, res) => {
     console.error('Teacher course update error:', err);
     if (req.file) await deleteFileIfExists(req.file.filename);
     res.status(500).json({ error: 'Failed to update course' });
+  }
+});
+
+router.delete('/teacher/:courseId', async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const playlistKeys = resolveCoursePlaylistKeys(course);
+    const materials = await Content.find({ playlist_id: { $in: playlistKeys } });
+    for (const material of materials) {
+      // eslint-disable-next-line no-await-in-loop
+      await cleanupMaterialAssets(material);
+    }
+    await Content.deleteMany({ playlist_id: { $in: playlistKeys } });
+    await Interaction.deleteMany({ playlist_id: { $in: playlistKeys } });
+    await CourseLike.deleteMany({ courseId: course.id });
+    await CourseComment.deleteMany({ courseId: course.id });
+
+    if (isLocalAsset(course.thumb)) {
+      await deleteFileIfExists(course.thumb);
+    }
+
+    await deletePlaylistsByKeys(playlistKeys);
+    await Course.deleteOne({ _id: course._id });
+
+    await Teacher.updateOne(
+      { _id: ctx.user._id },
+      { $pull: { coursesTaught: course._id.toString() } }
+    );
+
+    res.json({ message: 'Course deleted' });
+  } catch (err) {
+    console.error('Teacher course delete error:', err);
+    res.status(500).json({ error: 'Failed to delete course' });
   }
 });
 
@@ -1046,6 +1111,37 @@ router.put('/teacher/:courseId/materials/:materialId', materialUpload, async (re
     if (videoFile) await deleteFileIfExists(videoFile.filename);
     if (contentFile) await deleteFileIfExists(contentFile.filename);
     res.status(500).json({ error: 'Failed to update material' });
+  }
+});
+
+router.delete('/teacher/:courseId/materials/:materialId', async (req, res) => {
+  const ctx = await getTeacherContext(req, res);
+  if (!ctx) return;
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course || course.teacherId?.toString() !== ctx.user._id.toString()) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    const playlistKeys = resolveCoursePlaylistKeys(course);
+    const material = await Content.findById(req.params.materialId);
+    const playlistKey = material?.playlist_id?.toString();
+    if (
+      !material ||
+      (playlistKey && !playlistKeys.includes(playlistKey))
+    ) {
+      return res.status(404).json({ error: 'Material not found' });
+    }
+
+    await cleanupMaterialAssets(material);
+    await Interaction.deleteMany({
+      content_id: material.id || material._id.toString()
+    });
+    await material.deleteOne();
+
+    res.json({ message: 'Material deleted' });
+  } catch (err) {
+    console.error('Teacher material delete error:', err);
+    res.status(500).json({ error: 'Failed to delete material' });
   }
 });
 // GET /api/courses/manage - List stored courses (admin only)

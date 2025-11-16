@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { ClipLoader } from 'react-spinners';
+import { FaExclamationTriangle } from 'react-icons/fa';
 import api from './api';
 import { useAuth } from './context/AuthContext';
 
@@ -78,6 +79,8 @@ function UploadMaterial() {
   const [thumbPreview, setThumbPreview] = useState('');
   const [videoFile, setVideoFile] = useState(null);
   const [contentFile, setContentFile] = useState(null);
+  const [showDeletePrompt, setShowDeletePrompt] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
   const [existingFilePath, setExistingFilePath] = useState('');
   const [loadingCourses, setLoadingCourses] = useState(true);
   const [loadingMaterial, setLoadingMaterial] = useState(false);
@@ -435,6 +438,21 @@ useEffect(() => {
     }
   };
 
+  const handleMaterialDelete = async () => {
+    if (!materialId || !form.courseId) return;
+    setDeleteLoading(true);
+    try {
+      await api.delete(`/courses/teacher/${form.courseId}/materials/${materialId}`);
+      toast.success('Material deleted');
+      navigate('/teacher/courses');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to delete material');
+    } finally {
+      setDeleteLoading(false);
+      setShowDeletePrompt(false);
+    }
+  };
+
   if (initializing || !isTeacher) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0f1117] text-white">
@@ -444,6 +462,7 @@ useEffect(() => {
   }
 
   return (
+    <>
     <section className="teachers upload-page">
       <h1 className="heading">{materialId ? 'Edit Course Material' : 'Upload Course Material'}</h1>
       <div className="form-screen form-screen--plain form-screen--stacked">
@@ -783,12 +802,54 @@ useEffect(() => {
                 >
                   Cancel
                 </button>
+                {materialId && (
+                  <button
+                    type="button"
+                    className="delete-btn"
+                    onClick={() => setShowDeletePrompt(true)}
+                    disabled={saving}
+                  >
+                    Delete material
+                  </button>
+                )}
               </div>
           </form>
         )}
       </div>
     </div>
     </section>
+      {materialId && showDeletePrompt && (
+        <div className="danger-modal" role="dialog" aria-modal="true">
+          <div className="danger-modal__card">
+            <div className="danger-modal__icon">
+              <FaExclamationTriangle />
+            </div>
+            <h3 className="danger-modal__title">Delete this material?</h3>
+            <p className="danger-modal__copy">
+              Removing this lesson erases its files and analytics permanently. Students will immediately lose access.
+            </p>
+            <div className="danger-modal__actions">
+              <button
+                type="button"
+                className="delete-btn"
+                onClick={handleMaterialDelete}
+                disabled={deleteLoading}
+              >
+                {deleteLoading ? <ClipLoader size={18} color="#fff" /> : 'Delete material'}
+              </button>
+              <button
+                type="button"
+                className="option-btn"
+                onClick={() => setShowDeletePrompt(false)}
+                disabled={deleteLoading}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

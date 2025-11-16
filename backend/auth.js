@@ -776,22 +776,20 @@ router.post('/track', auth, async (req, res) => {
 
 /**
  * ROUTE 2: Calculate Features & Trigger Prediction
- * Your frontend will call this after a user finishes a playlist/module.
- * URL: POST /api/predict-style/:playlistId
+ * Your frontend can call this at any time to refresh the student's learning style.
+ * URL: POST /api/predict-style
  */
-router.post('/predict-style/:playlistId', auth, async (req, res) => {
+router.post('/predict-style', auth, async (req, res) => {
     try {
         const userId = req.user.id;
-        const { playlistId } = req.params;
 
         // 1. Get user (for saving)
         const user = await findUserById(userId);
         if (!user) return res.status(404).json({ error: 'User not found' });
 
-        // 2. Get all interactions for this user and this specific playlist
+        // 2. Get all interactions for this user across every playlist
         const interactions = await models.Interaction.find({ 
-            user_id: userId, 
-            playlist_id: playlistId 
+            user_id: userId
         });
 
         if (interactions.length < 5) { // Not enough data to predict

@@ -545,7 +545,7 @@ const CoursesDetail = React.memo(() => {
             {sortedPreviewMaterials.map((material) => (
               <article key={`preview-${material._id || material.id}`} className="teacher-preview__item">
                 <header className="teacher-preview__item-header">
-                  <span className="teacher-preview__badge">Lesson {material.order ?? '—'}</span>
+                  <span className="teacher-preview__badge">Lesson {material.order ?? '-'}</span>
                   <div>
                     <h3>{material.title}</h3>
                     <div className="teacher-preview__meta">

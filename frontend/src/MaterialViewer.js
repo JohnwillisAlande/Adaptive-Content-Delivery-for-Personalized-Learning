@@ -100,6 +100,21 @@ function MaterialViewer() {
   const flashcards = useMemo(() => buildFlashcards(material), [material]);
   const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [material]);
 
+  const buildContentObject = useCallback(() => {
+    if (!material) return null;
+    const annotations = material.annotations || {};
+    return {
+      id: material.id || material._id || material.content_id,
+      playlist_id: material.playlist_id || course?.playlistId || material.playlistId || courseId,
+      order: material.order ?? annotations.order ?? 0,
+      annotations: {
+        format: annotations.format || 'Visual',
+        type: annotations.type || 'Abstract',
+        category: annotations.category || 'Video'
+      }
+    };
+  }, [material, course?.playlistId, courseId]);
+
   const trackInteraction = useCallback(
     async (elapsed, overrideCompleted) => {
       if (hasTrackedRef.current) return;
@@ -110,6 +125,17 @@ function MaterialViewer() {
           timeSpentSeconds: Math.max(0, elapsed),
           completed: overrideCompleted ?? completedRef.current
         });
+        const contentObject = buildContentObject();
+        if (contentObject) {
+          try {
+            await api.post('/track', {
+              timeSpentSeconds: Math.max(0, elapsed),
+              contentObject
+            });
+          } catch (trackErr) {
+            console.warn('Failed to persist ML tracking data', trackErr);
+          }
+        }
         let refreshed = false;
         if (data?.xpAwarded) {
           const totalXpLabel = data.totalXp ? ` (total ${data.totalXp} XP)` : '';
