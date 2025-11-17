@@ -64,7 +64,7 @@ function UserHeader() {
     }
     links.push({ to: '/teachers', label: 'Teachers' });
     if (user?.userType === 'Admin') {
-      links.push({ to: '/students', label: 'Students' });
+      links.push({ to: '/students', label: 'Students' }, { to: '/admin/model', label: 'Model' });
     }
     links.push({ to: '/about', label: 'About' }, { to: '/contact', label: 'Contact' });
     return links;
@@ -109,7 +109,7 @@ function UserHeader() {
     <>
       <header className="floating-nav" aria-label="Primary navigation">
         <div className="floating-nav__shell">
-          <Link to={isAuthenticated ? '/home' : '/login'} className="floating-nav__logo">
+          <Link to={isAuthenticated ? '/home' : '/'} className="floating-nav__logo">
             ApexLearn
           </Link>
           <nav className="floating-nav__menu">
@@ -223,7 +223,10 @@ function UserHeader() {
           )}
           <Link to="/teachers"><i className="fas fa-chalkboard-user"></i><span>Teachers</span></Link>
           {user?.userType === 'Admin' && (
-            <Link to="/students"><i className="fas fa-users"></i><span>Students</span></Link>
+            <>
+              <Link to="/students"><i className="fas fa-users"></i><span>Students</span></Link>
+              <Link to="/admin/model"><i className="fas fa-robot"></i><span>Model</span></Link>
+            </>
           )}
           <Link to="/about"><i className="fas fa-question"></i><span>About Us</span></Link>
           <Link to="/contact"><i className="fas fa-headset"></i><span>Contact Us</span></Link>

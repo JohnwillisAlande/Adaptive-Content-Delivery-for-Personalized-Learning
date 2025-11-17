@@ -38,7 +38,7 @@ const Students = () => {
     }
 
     setLoading(true);
-    api.get('/students')
+    api.get('/admin/students')
       .then(({ data }) => {
         const payload = Array.isArray(data) ? data : [];
         setStudents(payload);
@@ -81,43 +81,54 @@ const Students = () => {
         />
         <button type="submit" className="fas fa-search"></button>
       </form>
-      <div className="overflow-x-auto mt-8">
-        <table className="min-w-full bg-[#1a1d2e] text-white rounded-xl shadow-lg">
-          <thead>
-            <tr className="bg-teal-700 text-white">
-              <th className="px-4 py-3">Image</th>
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Email</th>
-              <th className="px-4 py-3">Enrolled Courses</th>
-              <th className="px-4 py-3">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredStudents.map(student => (
-              <tr key={student._id} className="border-b border-gray-700">
-                <td className="px-4 py-2">
-                  <img src={resolveImage(student.image)} alt="profile" className="w-12 h-12 object-cover rounded-lg" />
-                </td>
-                <td className="px-4 py-2 font-bold">{student.name}</td>
-                <td className="px-4 py-2">{student.email}</td>
-                <td className="px-4 py-2">
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-600">{student.enrolledCourses?.length || 0}</span>
-                  {student.enrolledCourses && student.enrolledCourses.length > 0 && (
-                    <ul className="mt-2 text-xs text-gray-300">
-                      {student.enrolledCourses.map((course, idx) => (
-                        <li key={idx}>{course}</li>
-                      ))}
-                    </ul>
-                  )}
-                </td>
-                <td className="px-4 py-2 flex gap-2">
-                  <button onClick={() => navigate(`/students/${student._id}`)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold transition-all duration-300">View</button>
-                  <button onClick={() => toast.info('Delete functionality coming soon!')} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold transition-all duration-300">Delete</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="admin-students-board">
+        {filteredStudents.map(student => (
+          <article
+            key={student.id}
+            className="admin-student-row"
+            role="button"
+            tabIndex={0}
+            onClick={() => navigate(`/admin/students/${student.id}`)}
+            onKeyPress={(event) => {
+              if (event.key === 'Enter') navigate(`/admin/students/${student.id}`);
+            }}
+          >
+            <div className="admin-student-row__identity">
+              <img src={resolveImage(student.image)} alt={student.name} />
+              <div>
+                <h3>{student.name}</h3>
+                <p>{student.email}</p>
+                <span className={`status-dot${student.online ? ' status-dot--online' : ''}`}>
+                  {student.online ? 'Online' : 'Offline'}
+                </span>
+              </div>
+            </div>
+            <div className="admin-student-row__metrics">
+              <div>
+                <span>Learning Style</span>
+                <strong>{student.learningStyleLabel || 'Not predicted'}</strong>
+              </div>
+              <div>
+                <span>Courses Enrolled</span>
+                <strong>{student.courseCount ?? 0}</strong>
+              </div>
+              <div>
+                <span>Joined</span>
+                <strong>{student.registeredAt ? new Date(student.registeredAt).toLocaleDateString() : '—'}</strong>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="inline-btn admin-student-row__cta"
+              onClick={(event) => {
+                event.stopPropagation();
+                navigate(`/admin/students/${student.id}`);
+              }}
+            >
+              View Profile
+            </button>
+          </article>
+        ))}
       </div>
     </section>
   );

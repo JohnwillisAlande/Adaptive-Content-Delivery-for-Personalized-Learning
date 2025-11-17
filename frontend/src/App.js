@@ -11,6 +11,7 @@ import Teachers from './Teachers';
 import Students from './Students';
 import About from './About';
 import Contact from './Contact';
+import Landing from './Landing';
 import ForgotPassword from './ForgotPassword';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import NewPassword from './NewPassword';
@@ -26,10 +27,18 @@ const TeacherCourses = React.lazy(() => import('./TeacherCourses'));
 const UploadMaterial = React.lazy(() => import('./UploadMaterial'));
 const StudentCourses = React.lazy(() => import('./StudentCourses'));
 const MaterialViewer = React.lazy(() => import('./MaterialViewer'));
+const AdminCourseAnalytics = React.lazy(() => import('./AdminCourseAnalytics'));
+const AdminTeacherDetail = React.lazy(() => import('./AdminTeacherDetail'));
+const AdminTeacherLogs = React.lazy(() => import('./AdminTeacherLogs'));
+const AdminStudentDetail = React.lazy(() => import('./AdminStudentDetail'));
+const AdminStudentLogs = React.lazy(() => import('./AdminStudentLogs'));
+const AdminModel = React.lazy(() => import('./AdminModel'));
 
 
 function App() {
-  const { initializing } = useAuth();
+  const { initializing, isAuthenticated } = useAuth();
+
+  const guard = (node) => (isAuthenticated ? node : <Landing />);
 
   if (initializing) {
     return (
@@ -45,40 +54,104 @@ function App() {
       <UserHeader />
       <div className="main-content">
         <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/home" element={<Home />} />
-          <Route path="/courses" element={<Courses />} />
-          <Route path="/courses/:courseId" element={
-            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
-              <CoursesDetail />
-            </Suspense>
-          } />
-          <Route path="/courses/:courseId/materials/:materialId" element={
-            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
-              <MaterialViewer />
-            </Suspense>
-          } />
-          <Route path="/teacher/courses" element={
-            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
-              <TeacherCourses />
-            </Suspense>
-          } />
-          <Route path="/teacher/materials" element={
-            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
-              <UploadMaterial />
-            </Suspense>
-          } />
-          <Route path="/student/courses" element={
-            <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
-              <StudentCourses />
-            </Suspense>
-          } />
-          <Route path="/profile" element={<Profile />} />
-          <Route path="/teachers" element={<Teachers />} />
-          <Route path="/students" element={<Students />} />
-          <Route path="/about" element={<About />} />
-          <Route path="/contact" element={<Contact />} />
+          <Route path="/" element={isAuthenticated ? <Navigate to="/home" replace /> : <Landing />} />
+          <Route path="/login" element={isAuthenticated ? <Navigate to="/home" replace /> : <Login />} />
+          <Route path="/register" element={isAuthenticated ? <Navigate to="/home" replace /> : <Register />} />
+          <Route path="/home" element={guard(<Home />)} />
+          <Route path="/courses" element={guard(<Courses />)} />
+          <Route
+            path="/courses/:courseId"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <CoursesDetail />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/courses/:courseId/materials/:materialId"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <MaterialViewer />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/admin/courses/:courseId"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminCourseAnalytics />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/teacher/courses"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <TeacherCourses />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/teacher/materials"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <UploadMaterial />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/student/courses"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <StudentCourses />
+              </Suspense>
+            )}
+          />
+          <Route path="/profile" element={guard(<Profile />)} />
+          <Route path="/teachers" element={guard(<Teachers />)} />
+          <Route
+            path="/admin/teachers/:teacherId"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminTeacherDetail />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/admin/teachers/:teacherId/logs"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminTeacherLogs />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/admin/model"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminModel />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/admin/students/:studentId"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminStudentDetail />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/admin/students/:studentId/logs"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminStudentLogs />
+              </Suspense>
+            )}
+          />
+          <Route path="/students" element={guard(<Students />)} />
+          <Route path="/about" element={guard(<About />)} />
+          <Route path="/contact" element={guard(<Contact />)} />
           {/* Password reset flow routes */}
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/new-password/:token" element={<NewPassword />} />
@@ -86,7 +159,7 @@ function App() {
           <Route path="/password-reset-success" element={<PasswordResetSuccess />} />
           {/* GitHub auth callback route */}
           <Route path="/auth/callback" element={<AuthCallback />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={isAuthenticated ? <Navigate to="/home" replace /> : <Landing />} />
         </Routes>
       </div>
     </GoogleOAuthProvider>

@@ -236,6 +236,7 @@ const CoursesDetail = React.memo(() => {
   const canAccessMaterials = !enrollmentRequired;
   const isStudent = user?.userType === 'Student';
   const isTeacher = user?.userType === 'Teacher';
+  const isAdmin = user?.userType === 'Admin';
 
   const sortedPreviewMaterials = useMemo(() => {
     return [...materials].sort((a, b) => {
@@ -482,19 +483,82 @@ const CoursesDetail = React.memo(() => {
             next={handleLoadMore}
             hasMore={hasMore}
             loader={<div className="flex justify-center py-6"><ClipLoader color="#14b8a6" /></div>}
-            className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
+            className={isAdmin ? 'admin-materials-list' : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6'}
           >
             {materials.map(material => {
               const thumb = resolveThumb(material.thumb, course?.backgroundImage);
               const completed = Boolean(material.isCompleted);
+              const key = material._id || material.id;
+
+              if (isAdmin) {
+                return (
+                  <article
+                    key={key}
+                    className={`admin-material-card ${!canAccessMaterials ? 'admin-material-card--disabled' : ''}`}
+                    onClick={() => canAccessMaterials && navigate(`/courses/${courseId}/materials/${key}`)}
+                    onKeyPress={(event) => {
+                      if (event.key === 'Enter' && canAccessMaterials) {
+                        navigate(`/courses/${courseId}/materials/${key}`);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="admin-material-card__thumb-wrapper">
+                      <img
+                        src={thumb}
+                        alt={material.title}
+                        className="admin-material-card__thumb"
+                        loading="lazy"
+                      />
+                      <div className="admin-material-card__tag">
+                        {material.annotations?.category || 'Material'}
+                      </div>
+                    </div>
+                    <div className="admin-material-card__body">
+                      <div className="admin-material-card__header">
+                        <h3>{material.title}</h3>
+                        {completed && (
+                          <span className="admin-material-card__status" aria-label="Completed">
+                            <FaCheck />
+                          </span>
+                        )}
+                      </div>
+                      <p className="admin-material-card__description">{material.description}</p>
+                      <div className="admin-material-card__meta">
+                        {material.annotations?.format && <span>{material.annotations.format}</span>}
+                        {material.annotations?.type && <span>{material.annotations.type}</span>}
+                        {typeof material.order === 'number' && material.order > 0 && (
+                          <span>Lesson {material.order}</span>
+                        )}
+                      </div>
+                      <div className="admin-material-card__actions">
+                        <button
+                          type="button"
+                          className="inline-btn"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (canAccessMaterials) {
+                              navigate(`/courses/${courseId}/materials/${key}`);
+                            }
+                          }}
+                        >
+                          View material
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              }
+
               return (
                 <article
-                  key={material._id || material.id}
+                  key={key}
                   className={`relative bg-[#1a1d2e] rounded-2xl overflow-hidden shadow-lg border border-transparent hover:border-teal-500 transition ${!canAccessMaterials ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}
-                  onClick={() => canAccessMaterials && navigate(`/courses/${courseId}/materials/${material._id || material.id}`)}
+                  onClick={() => canAccessMaterials && navigate(`/courses/${courseId}/materials/${key}`)}
                   onKeyPress={(event) => {
                     if (event.key === 'Enter' && canAccessMaterials) {
-                      navigate(`/courses/${courseId}/materials/${material._id || material.id}`);
+                      navigate(`/courses/${courseId}/materials/${key}`);
                     }
                   }}
                   role="button"

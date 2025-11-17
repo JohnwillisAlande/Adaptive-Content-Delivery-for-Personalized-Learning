@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ClipLoader from 'react-spinners/ClipLoader';
 import { FaBook, FaCalculator, FaGlobeAfrica, FaLeaf, FaAppleAlt, FaPray, FaPaintBrush } from 'react-icons/fa';
 import { toast } from 'react-toastify';
 import { useAuth } from './context/AuthContext';
@@ -118,6 +119,8 @@ function Courses() {
   const [activeTab, setActiveTab] = useState('all');
   const [enrolledCourses, setEnrolledCourses] = useState(new Set());
   const [navigatingCourseId, setNavigatingCourseId] = useState(null);
+  const [adminSearch, setAdminSearch] = useState('');
+  const [adminSortKey, setAdminSortKey] = useState('name');
   const navigate = useNavigate();
   const { user, isAuthenticated, initializing } = useAuth();
 
@@ -128,6 +131,11 @@ function Courses() {
     // Teachers have a dedicated dashboard - navigate directly there.
     if (userType === 'Teacher') {
       navigate('/teacher/courses');
+      return;
+    }
+
+    if (userType === 'Admin') {
+      navigate(`/admin/courses/${courseId}`);
       return;
     }
 
@@ -165,28 +173,46 @@ function Courses() {
   useEffect(() => {
     if (initializing) return;
 
-    if (userType === 'Admin') {
-      setLoading(false);
-      return;
-    }
-
     let active = true;
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        const { data } = await api.get('/courses');
-        if (!active) return;
-        const resolvedCourses = data && data.length ? data : COURSE_LIST;
-        setCourses(resolvedCourses);
+    const fetchDefaultCourses = async () => {
+      const { data } = await api.get('/courses');
+      const resolvedCourses = data && data.length ? data : COURSE_LIST;
+      setCourses(resolvedCourses);
+      if (userType === 'Student') {
         const enrolled = (data || [])
           .filter(course => course.isEnrolled)
           .map(course => course.id);
         setEnrolledCourses(new Set(enrolled));
+      } else {
+        setEnrolledCourses(new Set());
+      }
+    };
+
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        if (userType === 'Admin') {
+          const { data } = await api.get('/courses/admin/overview');
+          if (!active) return;
+          setCourses(Array.isArray(data) ? data : []);
+          setEnrolledCourses(new Set());
+        } else {
+          await fetchDefaultCourses();
+        }
       } catch (err) {
         if (!active) return;
         toast.error(err.response?.data?.error || 'Failed to fetch courses');
-        setCourses(COURSE_LIST);
-        setEnrolledCourses(new Set());
+        if (userType === 'Admin') {
+          try {
+            await fetchDefaultCourses();
+          } catch {
+            setCourses([]);
+            setEnrolledCourses(new Set());
+          }
+        } else {
+          setCourses(COURSE_LIST);
+          setEnrolledCourses(new Set());
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -206,6 +232,44 @@ function Courses() {
         return courses;
     }
   }, [activeTab, courses, enrolledCourses]);
+
+  const adminFilteredCourses = useMemo(() => {
+    if (userType !== 'Admin') return [];
+    const term = adminSearch.toLowerCase();
+    return courses.filter(course => (course.title || '').toLowerCase().includes(term));
+  }, [courses, adminSearch, userType]);
+
+  const sortedAdminCourses = useMemo(() => {
+    if (userType !== 'Admin') return [];
+    const list = [...adminFilteredCourses];
+    const metricValue = (course, key) => {
+      switch (key) {
+        case 'created':
+          return new Date(course.createdAt || 0).getTime();
+        case 'students':
+          return course.studentCount || 0;
+        case 'materials':
+          return course.materialCount || 0;
+        case 'visual':
+          return course.formatCounts?.Visual || 0;
+        case 'verbal':
+          return course.formatCounts?.Verbal || 0;
+        case 'audio':
+          return course.formatCounts?.Audio || 0;
+        default:
+          return (course.title || '').toLowerCase();
+      }
+    };
+    list.sort((a, b) => {
+      if (adminSortKey === 'name') {
+        return metricValue(a, 'name').localeCompare(metricValue(b, 'name'));
+      }
+      const diff = metricValue(b, adminSortKey) - metricValue(a, adminSortKey);
+      if (diff !== 0) return diff;
+      return (a.title || '').localeCompare(b.title || '');
+    });
+    return list;
+  }, [adminFilteredCourses, adminSortKey, userType]);
 
   // Handler for enrolling in a course
   const handleEnroll = async (courseId, event) => {
@@ -239,6 +303,82 @@ function Courses() {
       </div>
     );
   }
+  if (userType === 'Admin') {
+    return (
+      <div className="admin-courses-page">
+        <div className="admin-courses-page__header">
+          <h1>Courses Overview</h1>
+          <p>Tap a course to view engagement and enrollment metrics.</p>
+        </div>
+        <div className="admin-courses-page__controls">
+          <input
+            type="search"
+            placeholder="Search courses..."
+            value={adminSearch}
+            onChange={(event) => setAdminSearch(event.target.value)}
+            aria-label="Search courses"
+          />
+          <select value={adminSortKey} onChange={(event) => setAdminSortKey(event.target.value)}>
+            <option value="name">Sort by Name</option>
+            <option value="created">Sort by Creation Date</option>
+            <option value="students">Sort by Students</option>
+            <option value="materials">Sort by Materials</option>
+            <option value="visual">Sort by Visual Materials</option>
+            <option value="verbal">Sort by Verbal Materials</option>
+            <option value="audio">Sort by Audio Materials</option>
+          </select>
+        </div>
+        {loading ? (
+          <div className="flex justify-center py-16">
+            <ClipLoader color="#14b8a6" size={32} />
+          </div>
+        ) : sortedAdminCourses.length === 0 ? (
+          <p className="empty">No courses found.</p>
+        ) : (
+          <div className="admin-course-table">
+            <div className="admin-course-table__head">
+              <span>Course</span>
+              <span>Teacher</span>
+              <span>Students</span>
+              <span>Materials</span>
+              <span>Status</span>
+            </div>
+            {sortedAdminCourses.map((course) => (
+              <button
+                key={course.id || course._id}
+                type="button"
+                className="admin-course-table__row"
+                onClick={() => navigate(`/admin/courses/${course.id || course._id}`)}
+              >
+                <div className="admin-course-table__course">
+                  <strong>{course.title || course.name}</strong>
+                  <span>{course.subtitle || course.description}</span>
+                </div>
+                <div className="admin-course-table__cell">{course.teacherName || 'Unknown'}</div>
+                <div className="admin-course-table__cell">{course.studentCount ?? 0}</div>
+                <div className="admin-course-table__cell">
+                  <div className="admin-course-table__formats">
+                    <span>{course.materialCount ?? 0} total</span>
+                    <small>Vis: {course.formatCounts?.Visual ?? 0}</small>
+                    <small>Verb: {course.formatCounts?.Verbal ?? 0}</small>
+                    <small>Aud: {course.formatCounts?.Audio ?? 0}</small>
+                  </div>
+                </div>
+                <div className="admin-course-table__cell">
+                  {course.suspended ? (
+                    <span className="admin-course-table__pill admin-course-table__pill--danger">Suspended</span>
+                  ) : (
+                    <span className="admin-course-table__pill admin-course-table__pill--success">Active</span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Teacher quick access view
 
   if (userType === 'Teacher') {

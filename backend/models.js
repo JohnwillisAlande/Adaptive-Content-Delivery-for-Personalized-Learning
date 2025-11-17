@@ -126,6 +126,7 @@ const CourseSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   title: { type: String, required: true },
   description: { type: String, required: true },
+  suspended: { type: Boolean, default: false },
   subtitle: { type: String, default: '' },
   backgroundImage: { type: String, default: '' },
   thumb: { type: String, default: '' },
@@ -196,7 +197,7 @@ const StudentSchema = new mongoose.Schema({
   },
   
   featureVector: { type: Object, default: null } 
-});
+}, { timestamps: true });
 
 // Teacher schema
 const TeacherSchema = new mongoose.Schema({
@@ -218,7 +219,7 @@ const TeacherSchema = new mongoose.Schema({
     is_global: { type: Number, default: 0 }
   },
   featureVector: { type: Object, default: null }
-});
+}, { timestamps: true });
 
 // Admin schema
 const AdminSchema = new mongoose.Schema({
@@ -268,6 +269,18 @@ const InteractionSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 });
 
+const ModelLogSchema = new mongoose.Schema(
+  {
+    userId: { type: String, default: '' },
+    featureVector: { type: mongoose.Schema.Types.Mixed, default: null },
+    prediction: { type: mongoose.Schema.Types.Mixed, default: null },
+    status: { type: String, default: 'pending' },
+    errorMessage: { type: String, default: '' },
+    durationMs: { type: Number, default: 0 }
+  },
+  { timestamps: true }
+);
+
 
 module.exports = {
   Bookmark: mongoose.model('Bookmark', BookmarkSchema),
@@ -287,5 +300,6 @@ module.exports = {
   Admin: mongoose.model('Admin', AdminSchema),
   PasswordReset: mongoose.model('PasswordReset', PasswordResetSchema),
   About: mongoose.model('About', AboutSchema),
-  Interaction: mongoose.model('Interaction', InteractionSchema) // --- ADDED ---
+  Interaction: mongoose.model('Interaction', InteractionSchema), // --- ADDED ---
+  ModelLog: mongoose.model('ModelLog', ModelLogSchema)
 };

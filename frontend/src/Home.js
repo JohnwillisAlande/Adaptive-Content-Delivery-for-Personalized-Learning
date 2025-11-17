@@ -37,6 +37,7 @@ function Home() {
   const navigate = useNavigate();
   const { user, isAuthenticated, initializing } = useAuth();
   const userType = user?.userType || null;
+  const [suspendingId, setSuspendingId] = useState(null);
   useEffect(() => {
     if (initializing) return;
     if (userType === 'Admin') {
@@ -108,12 +109,42 @@ function Home() {
   const filteredCourses = courses.filter(course =>
     course.title?.toLowerCase().includes(search.toLowerCase())
   );
+
+  const handleSuspendToggle = async (course) => {
+    if (!course?.id) return;
+    const nextState = !course.suspended;
+    setSuspendingId(course.id);
+    try {
+      await api.patch(`/courses/${course.id}/suspend`, { suspended: nextState });
+      setCourses(prev =>
+        prev.map(item =>
+          item.id === course.id ? { ...item, suspended: nextState } : item
+        )
+      );
+      toast.success(`Course ${nextState ? 'suspended' : 'unsuspended'}.`);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update course visibility');
+    } finally {
+      setSuspendingId(null);
+    }
+  };
   // Admin: YouTube-style grid with actions
   if (userType === 'Admin') {
     return (
       <div>
         <section className="admin-courses" style={{ background: '#111', color: '#fff', padding: '2rem 0' }}>
-          <h1 className="heading" style={{ color: '#14b8a6', fontWeight: 700, fontSize: '2.2rem', marginBottom: '2rem' }}>All Courses</h1>
+          <h1
+            className="heading"
+            style={{
+              color: '#14b8a6',
+              fontWeight: 700,
+              fontSize: '2.2rem',
+              marginBottom: '2rem',
+              textAlign: 'center'
+            }}
+          >
+            All Courses
+          </h1>
           <div style={{ maxWidth: 900, margin: '0 auto 2rem auto' }}>
             <input
               type="text"
@@ -144,85 +175,52 @@ function Home() {
               {filteredCourses.map(course => (
                 <div
                   key={course.id || course._id}
-                  className="rounded-md bg-gray-900 shadow-lg border border-gray-800 flex flex-col overflow-hidden transition-all"
+                  className={`admin-course-card rounded-md bg-gray-900 shadow-lg border border-gray-800 flex flex-col overflow-hidden transition-all${course.suspended ? ' admin-course-card--suspended' : ''}`}
                   style={{
                     position: 'relative',
                     minHeight: 0,
                     cursor: 'pointer'
                   }}
                 >
-                  <div
-                    className="w-full"
-                    style={{
-                      aspectRatio: '16/9',
-                      background: '#222',
-                      position: 'relative',
-                      overflow: 'hidden'
-                    }}
-                  >
+                  <div className="admin-course-card__thumb">
                     <img
                       src={course.thumb ? `/uploaded_files/${course.thumb}` : course.backgroundImage}
                       alt={course.title}
-                      className="w-full h-full object-cover"
+                      className="admin-course-card__thumb-img"
                       loading="lazy"
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover',
-                        display: 'block',
-                        transition: 'transform 0.2s',
-                      }}
                     />
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        bottom: 0,
-                        width: '100%',
-                        background: 'rgba(20,184,166,0.85)',
-                        color: '#fff',
-                        padding: '0.5rem 1rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        fontWeight: 700,
-                        fontSize: '1.1rem',
-                        letterSpacing: '0.01em'
-                      }}
-                    >
-                      <span style={{ marginRight: '0.5rem' }}>
-                        {/* Optionally show icon if available */}
-                        {course.icon && React.createElement(course.icon, { style: { fontSize: '1.2rem', verticalAlign: 'middle' } })}
-                      </span>
-                      {course.title}
+                    <div className="admin-course-card__overlay">
+                      <div>
+                        <p className="admin-course-card__title">{course.title}</p>
+                        <p className="admin-course-card__creator">
+                          Created by: {course.teacherName || 'Unknown teacher'}
+                        </p>
+                      </div>
+                      {course.suspended && (
+                        <span className="admin-course-card__pill">Suspended</span>
+                      )}
                     </div>
                   </div>
                   <div className="flex-1 flex flex-col justify-between px-4 py-3">
-                    <div className="flex gap-2 mt-2">
+                    <p style={{ color: '#94a3b8', minHeight: '3rem' }}>{course.description}</p>
+                    <div className="admin-course-card__actions">
                       <Link
                         to={`/courses/${course.id || course._id}`}
-                        className="bg-teal-400 text-black px-3 py-1 rounded hover:bg-teal-500 text-sm font-semibold"
+                        className="inline-btn admin-course-card__view-btn"
                         aria-label="View course"
                       >
                         View
                       </Link>
                       <button
-                        className="bg-gray-700 text-white px-3 py-1 rounded hover:bg-gray-600 text-sm font-semibold"
-                        aria-label="Edit course"
-                        onClick={() => navigate(`/courses/${course.id || course._id}/edit`)}
+                        className={`admin-course-card__suspend-btn px-3 py-1 rounded text-sm font-semibold${course.suspended ? ' admin-course-card__suspend-btn--revive' : ''}`}
+                        aria-label="Toggle course suspension"
+                        onClick={() => handleSuspendToggle(course)}
+                        disabled={suspendingId === course.id}
+                        style={{ minWidth: '110px' }}
                       >
-                        Edit
-                      </button>
-                      <button
-                        className="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 text-sm font-semibold"
-                        aria-label="Delete course"
-                        onClick={() => {
-                          if (window.confirm('Are you sure you want to delete this course?')) {
-                            // TODO: Implement delete logic (API call, update state, show toast)
-                            toast.info('Delete functionality not implemented yet.');
-                          }
-                        }}
-                      >
-                        Delete
+                        {suspendingId === course.id
+                          ? 'Updating...'
+                          : course.suspended ? 'Unsuspend' : 'Suspend'}
                       </button>
                     </div>
                   </div>

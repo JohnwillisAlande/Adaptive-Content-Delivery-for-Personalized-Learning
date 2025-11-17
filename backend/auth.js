@@ -18,6 +18,108 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const axios = require('axios'); // <-- ADDED: For calling Python API
 
 const JWT_SECRET = process.env.JWT_SECRET || 'apex101_secret';
+const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+
+const isAdminRequest = (req) => req?.user?.userType === 'Admin';
+const ensureAdmin = (req, res) => {
+    if (!isAdminRequest(req)) {
+        res.status(403).json({ error: 'Admins only' });
+        return false;
+    }
+    return true;
+};
+
+const calculateOnlineStatus = (dateValue) => {
+    if (!dateValue) return false;
+    const timestamp = new Date(dateValue).getTime();
+    if (Number.isNaN(timestamp)) return false;
+    return Date.now() - timestamp <= ONLINE_WINDOW_MS;
+};
+
+const collectCourseKeys = (course) => {
+    const keys = new Set();
+    if (!course) return [];
+    if (course.id) keys.add(course.id.toString());
+    if (course._id) keys.add(course._id.toString());
+    if (course.playlistId) keys.add(course.playlistId.toString());
+    return Array.from(keys).filter(Boolean);
+};
+
+const buildTeacherCourseContext = async (teacherId) => {
+    const teacher = await models.Teacher.findById(teacherId).lean();
+    if (!teacher) return null;
+    const courses = await models.Course.find({ teacherId: teacher._id })
+        .sort({ createdAt: -1 })
+        .lean();
+
+    const keyToCourseId = new Map();
+    const courseIdToCourse = new Map();
+    courses.forEach((course) => {
+        const idString = course._id.toString();
+        courseIdToCourse.set(idString, course);
+        collectCourseKeys(course).forEach((key) => {
+            keyToCourseId.set(key, idString);
+        });
+    });
+
+    const playlistKeys = Array.from(keyToCourseId.keys());
+    return { teacher, courses, keyToCourseId, courseIdToCourse, playlistKeys };
+};
+
+const buildStudentLearningLabel = (learningStyle = {}) => {
+    const dimensions = [];
+    dimensions.push(learningStyle.is_intuitive ? 'Intuitive' : 'Sensory');
+    dimensions.push(learningStyle.is_verbal ? 'Verbal' : 'Visual');
+    dimensions.push(learningStyle.is_reflective ? 'Reflective' : 'Active');
+    dimensions.push(learningStyle.is_global ? 'Global' : 'Sequential');
+    return dimensions.join(' · ');
+};
+
+const buildStudentCourseContext = async (studentId) => {
+    const student = await models.Student.findById(studentId).lean();
+    if (!student) return null;
+    const enrolledRaw = Array.isArray(student.enrolledCourses) ? student.enrolledCourses : [];
+    const enrolled = enrolledRaw.map((value) => value?.toString()).filter(Boolean);
+    const courses = enrolled.length
+        ? await models.Course.find({ id: { $in: enrolled } }).lean()
+        : [];
+
+    const courseMap = new Map();
+    const playlistToCourse = new Map();
+    const playlistKeys = [];
+    courses.forEach((course) => {
+        courseMap.set(course.id, course);
+        collectCourseKeys(course).forEach((key) => {
+            playlistToCourse.set(key, course.id);
+            playlistKeys.push(key);
+        });
+    });
+
+    return {
+        student,
+        enrolledCourseIds: enrolled,
+        courses,
+        courseMap,
+        playlistToCourse,
+        playlistKeys
+    };
+};
+
+const ML_API_URL = process.env.ML_API_URL || 'http://localhost:5001/predict';
+const resolveModelHealthUrl = () => process.env.ML_API_HEALTH_URL || ML_API_URL.replace(/\/predict$/, '/health');
+
+const checkModelStatus = async () => {
+    const healthUrl = resolveModelHealthUrl();
+    try {
+        const response = await axios.get(healthUrl, { timeout: 2000 });
+        return { running: true, message: response.statusText || 'OK' };
+    } catch (err) {
+        if (err.response) {
+            return { running: true, message: err.response.statusText || 'Responding' };
+        }
+        return { running: false, message: err.message };
+    }
+};
 
 // ---
 // --- ADDED: HELPER FUNCTIONS TO FIND USERS ACROSS COLLECTIONS ---
@@ -118,17 +220,513 @@ router.get('/teachers', auth, async (req, res) => {
     }
 });
 
-// --- Students List ---
-router.get('/students', auth, async (req, res) => {
+router.get('/admin/teachers', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
     try {
-        if (req.user.userType !== 'Admin') {
-            return res.status(403).json([]);
-        }
-        const students = await models.Student.find({}, '_id name email image enrolledCourses');
-        res.json(students);
+        const teachers = await models.Teacher.find({}, { password: 0, reset_token: 0, reset_expiry: 0 })
+            .sort({ createdAt: -1 })
+            .lean();
+
+        const courseStats = await models.Course.aggregate([
+            { $match: { teacherId: { $ne: null } } },
+            {
+                $group: {
+                    _id: '$teacherId',
+                    courseCount: { $sum: 1 },
+                    totalStudents: { $sum: { $ifNull: ['$students', 0] } }
+                }
+            }
+        ]);
+        const statsMap = new Map(courseStats.map((item) => [item._id?.toString(), item]));
+
+        const payload = teachers.map((teacher) => {
+            const hash = statsMap.get(teacher._id.toString()) || {};
+            const lastActiveAt = teacher.updatedAt || teacher.createdAt;
+            return {
+                id: teacher._id.toString(),
+                name: teacher.name,
+                email: teacher.email,
+                image: teacher.image || '',
+                courseCount: hash.courseCount || 0,
+                totalStudents: hash.totalStudents || 0,
+                registeredAt: teacher.createdAt,
+                lastActiveAt,
+                online: calculateOnlineStatus(lastActiveAt)
+            };
+        });
+
+        res.json(payload);
     } catch (err) {
-        console.error('Students fetch error:', err);
-        res.status(500).json({ error: 'Failed to fetch students' });
+        console.error('Admin teachers list error:', err);
+        res.status(500).json({ error: 'Failed to load teachers' });
+    }
+});
+
+router.get('/admin/teachers/:teacherId', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    try {
+        const context = await buildTeacherCourseContext(req.params.teacherId);
+        if (!context) {
+            return res.status(404).json({ error: 'Teacher not found' });
+        }
+        const { teacher, courses, keyToCourseId, courseIdToCourse, playlistKeys } = context;
+
+        const courseKeyBySlug = new Map();
+        courses.forEach((course) => {
+            const slug = course.id || course._id?.toString();
+            if (slug) {
+                courseKeyBySlug.set(slug, course._id.toString());
+            }
+        });
+        const courseSlugList = Array.from(courseKeyBySlug.keys());
+
+        const studentCountsMap = new Map();
+        let uniqueEnrolledCount = 0;
+
+        if (courseSlugList.length) {
+            const studentAgg = await models.Student.aggregate([
+                { $match: { enrolledCourses: { $exists: true, $ne: [] } } },
+                { $unwind: '$enrolledCourses' },
+                { $match: { enrolledCourses: { $in: courseSlugList } } },
+                { $group: { _id: '$enrolledCourses', count: { $sum: 1 } } }
+            ]);
+            studentAgg.forEach((entry) => {
+                const normalizedId = courseKeyBySlug.get(entry._id) || entry._id;
+                studentCountsMap.set(
+                    normalizedId,
+                    (studentCountsMap.get(normalizedId) || 0) + entry.count
+                );
+            });
+            uniqueEnrolledCount = await models.Student.countDocuments({
+                enrolledCourses: { $in: courseSlugList }
+            });
+        }
+
+        const materialMap = new Map();
+        const interactionMap = new Map();
+        let distinctLearners = [];
+
+        if (playlistKeys.length) {
+            const materialCounts = await models.Content.aggregate([
+                { $match: { playlist_id: { $in: playlistKeys } } },
+                { $group: { _id: '$playlist_id', count: { $sum: 1 } } }
+            ]);
+            materialCounts.forEach((entry) => {
+                const key = keyToCourseId.get(entry._id);
+                if (!key) return;
+                materialMap.set(key, (materialMap.get(key) || 0) + entry.count);
+            });
+
+            const interactionCounts = await models.Interaction.aggregate([
+                { $match: { playlist_id: { $in: playlistKeys } } },
+                {
+                    $group: {
+                        _id: '$playlist_id',
+                        totalVisits: { $sum: 1 },
+                        totalTime: { $sum: '$timeSpentSeconds' }
+                    }
+                }
+            ]);
+            interactionCounts.forEach((entry) => {
+                const key = keyToCourseId.get(entry._id);
+                if (!key) return;
+                const prev = interactionMap.get(key) || { totalVisits: 0, totalTime: 0 };
+                prev.totalVisits += entry.totalVisits || 0;
+                prev.totalTime += entry.totalTime || 0;
+                interactionMap.set(key, prev);
+            });
+
+            distinctLearners = await models.Interaction.distinct('user_id', {
+                playlist_id: { $in: playlistKeys }
+            });
+        }
+
+        const recentInteractions = playlistKeys.length
+            ? await models.Interaction.find({ playlist_id: { $in: playlistKeys } })
+                .sort({ timestamp: -1 })
+                .limit(6)
+                .select('playlist_id user_id timeSpentSeconds completed timestamp annotations')
+                .lean()
+            : [];
+
+        const courseStats = courses.map((course) => {
+            const idString = course._id.toString();
+            const interactions = interactionMap.get(idString) || { totalVisits: 0, totalTime: 0 };
+            const slug = course.id || idString;
+            const studentCount =
+                studentCountsMap.get(idString) ||
+                studentCountsMap.get(slug) ||
+                0;
+            return {
+                id: slug,
+                courseId: idString,
+                title: course.title,
+                createdAt: course.createdAt,
+                students: studentCount,
+                lessons: course.lessons || 0,
+                materialsCount: materialMap.get(idString) || 0,
+                totalVisits: interactions.totalVisits,
+                totalTimeSpentSeconds: interactions.totalTime
+            };
+        });
+
+        const overview = {
+            totalCourses: courses.length,
+            totalStudents: uniqueEnrolledCount,
+            totalMaterials: courseStats.reduce((sum, course) => sum + (course.materialsCount || 0), 0),
+            totalVisits: courseStats.reduce((sum, course) => sum + (course.totalVisits || 0), 0),
+            totalTimeSpentSeconds: courseStats.reduce((sum, course) => sum + (course.totalTimeSpentSeconds || 0), 0),
+            uniqueLearners: distinctLearners.length
+        };
+        overview.averageTimePerCourse = overview.totalCourses
+            ? overview.totalTimeSpentSeconds / overview.totalCourses
+            : 0;
+
+        const recentPayload = recentInteractions.map((entry) => {
+            const courseId = keyToCourseId.get(entry.playlist_id);
+            const course = courseId ? courseIdToCourse.get(courseId) : null;
+            return {
+                id: entry._id?.toString(),
+                courseId: course?.id || course?._id?.toString(),
+                courseTitle: course?.title || 'Course',
+                userId: entry.user_id,
+                timeSpentSeconds: entry.timeSpentSeconds,
+                completed: entry.completed,
+                timestamp: entry.timestamp,
+                annotations: entry.annotations || {}
+            };
+        });
+
+        res.json({
+            teacher: {
+                id: teacher._id.toString(),
+                name: teacher.name,
+                email: teacher.email,
+                image: teacher.image || '',
+                registeredAt: teacher.createdAt,
+                lastActiveAt: teacher.updatedAt || teacher.createdAt,
+                online: calculateOnlineStatus(teacher.updatedAt || teacher.createdAt)
+            },
+            overview,
+            courses: courseStats,
+            recentInteractions: recentPayload
+        });
+    } catch (err) {
+        console.error('Admin teacher detail error:', err);
+        res.status(500).json({ error: 'Failed to load teacher details' });
+    }
+});
+
+router.get('/admin/teachers/:teacherId/logs', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    try {
+        const context = await buildTeacherCourseContext(req.params.teacherId);
+        if (!context) {
+            return res.status(404).json({ error: 'Teacher not found' });
+        }
+        const { teacher, keyToCourseId, courseIdToCourse, playlistKeys } = context;
+        if (!playlistKeys.length) {
+            return res.json({ teacher: { id: teacher._id.toString(), name: teacher.name }, logs: [] });
+        }
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+        const entries = await models.Interaction.find({ playlist_id: { $in: playlistKeys } })
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .select('playlist_id user_id timeSpentSeconds completed timestamp annotations')
+            .lean();
+        const logs = entries.map((entry) => {
+            const courseId = keyToCourseId.get(entry.playlist_id);
+            const course = courseId ? courseIdToCourse.get(courseId) : null;
+            return {
+                id: entry._id?.toString(),
+                userId: entry.user_id,
+                courseId: course?.id || course?._id?.toString(),
+                courseTitle: course?.title || 'Course',
+                timeSpentSeconds: entry.timeSpentSeconds,
+                completed: entry.completed,
+                timestamp: entry.timestamp,
+                annotations: entry.annotations || {}
+            };
+        });
+        res.json({
+            teacher: { id: teacher._id.toString(), name: teacher.name },
+            logs
+        });
+    } catch (err) {
+        console.error('Admin teacher logs error:', err);
+        res.status(500).json({ error: 'Failed to load teacher logs' });
+    }
+});
+
+router.get('/admin/students', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    try {
+        const students = await models.Student.find()
+            .select('name email image enrolledCourses learningStyle createdAt updatedAt')
+            .lean();
+        const payload = students.map((student) => ({
+            id: student._id.toString(),
+            name: student.name,
+            email: student.email,
+            image: student.image || '',
+            courseCount: Array.isArray(student.enrolledCourses) ? student.enrolledCourses.filter(Boolean).length : 0,
+            registeredAt: student.createdAt,
+            lastActiveAt: student.updatedAt || student.createdAt,
+            online: calculateOnlineStatus(student.updatedAt || student.createdAt),
+            learningStyleLabel: buildStudentLearningLabel(student.learningStyle || {})
+        }));
+        res.json(payload);
+    } catch (err) {
+        console.error('Admin students list error:', err);
+        res.status(500).json({ error: 'Failed to load students' });
+    }
+});
+
+router.get('/admin/students/:studentId', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    try {
+        const context = await buildStudentCourseContext(req.params.studentId);
+        if (!context) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        const { student, enrolledCourseIds, courses, courseMap, playlistToCourse, playlistKeys } = context;
+        const learnerId = student._id.toString();
+        const baseMatch = { user_id: learnerId };
+        let courseSummaryAgg = [];
+        let formatAgg = [];
+        let materialAgg = [];
+        let materialsList = [];
+        if (playlistKeys.length) {
+            baseMatch.playlist_id = { $in: playlistKeys };
+            const matchStage = [{ $match: baseMatch }];
+            courseSummaryAgg = await models.Interaction.aggregate([
+                ...matchStage,
+                {
+                    $group: {
+                        _id: '$playlist_id',
+                        clicks: { $sum: 1 },
+                        totalTime: { $sum: '$timeSpentSeconds' },
+                        completions: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
+                        lastViewedAt: { $max: '$timestamp' }
+                    }
+                }
+            ]);
+            formatAgg = await models.Interaction.aggregate([
+                ...matchStage,
+                {
+                    $group: {
+                        _id: { playlist_id: '$playlist_id', format: '$annotations.format' },
+                        clicks: { $sum: 1 },
+                        totalTime: { $sum: '$timeSpentSeconds' }
+                    }
+                }
+            ]);
+            materialAgg = await models.Interaction.aggregate([
+                ...matchStage,
+                {
+                    $group: {
+                        _id: '$content_id',
+                        clicks: { $sum: 1 },
+                        totalTime: { $sum: '$timeSpentSeconds' },
+                        lastViewedAt: { $max: '$timestamp' }
+                    }
+                }
+            ]);
+            materialsList = await models.Content.find({ playlist_id: { $in: playlistKeys } })
+                .sort({ order: 1, createdAt: 1 })
+                .lean();
+        }
+
+        const courseSummaryMap = new Map();
+        courseSummaryAgg.forEach((entry) => {
+            const courseId = playlistToCourse.get(entry._id);
+            if (!courseId) return;
+            courseSummaryMap.set(courseId, {
+                clicks: entry.clicks || 0,
+                totalTimeSpentSeconds: entry.totalTime || 0,
+                completions: entry.completions || 0,
+                lastViewedAt: entry.lastViewedAt || null
+            });
+        });
+
+        const formatBreakdownMap = new Map();
+        formatAgg.forEach((entry) => {
+            const courseId = playlistToCourse.get(entry._id.playlist_id);
+            if (!courseId) return;
+            const rows = formatBreakdownMap.get(courseId) || [];
+            rows.push({
+                format: entry._id.format || 'Unspecified',
+                clicks: entry.clicks || 0,
+                totalTimeSpentSeconds: entry.totalTime || 0
+            });
+            formatBreakdownMap.set(courseId, rows);
+        });
+
+        const materialStatsMap = new Map(
+            materialAgg.map((entry) => [entry._id?.toString(), entry])
+        );
+
+        const courseMaterialsMap = new Map();
+        materialsList.forEach((material) => {
+            const playlistId = material.playlist_id?.toString();
+            const courseId = playlistToCourse.get(playlistId);
+            if (!courseId) return;
+            const rows = courseMaterialsMap.get(courseId) || [];
+            rows.push(material);
+            courseMaterialsMap.set(courseId, rows);
+        });
+
+        const coursesPayload = enrolledCourseIds.map((courseId) => {
+            const doc = courseMap.get(courseId);
+            const metrics = courseSummaryMap.get(courseId) || {
+                clicks: 0,
+                totalTimeSpentSeconds: 0,
+                completions: 0,
+                lastViewedAt: null
+            };
+            const formatBreakdown = formatBreakdownMap.get(courseId) || [];
+            const materials = (courseMaterialsMap.get(courseId) || []).map((material) => {
+                const materialId = material.id || material._id?.toString();
+                const stats = materialStatsMap.get(materialId) || {};
+                return {
+                    id: materialId,
+                    title: material.title,
+                    annotations: material.annotations || {},
+                    clicks: stats.clicks || 0,
+                    totalTimeSpentSeconds: stats.totalTime || 0,
+                    lastViewedAt: stats.lastViewedAt || null
+                };
+            });
+            return {
+                id: courseId,
+                title: doc?.title || courseId,
+                subtitle: doc?.subtitle || '',
+                metrics,
+                formatBreakdown,
+                materials
+            };
+        });
+
+        const badges = await models.StudentBadge.find({ studentId: student._id })
+            .select('badgeId awardedAt')
+            .lean();
+
+        const gamification = {
+            xp: student.xp || 0,
+            loginStreak: student.loginStreak || { count: 0, longest: 0 },
+            lessonStreak: student.lessonStreak || { count: 0, longest: 0 },
+            dailyGoal: student.dailyGoal || null,
+            badges: badges.map((badge) => ({
+                badgeId: badge.badgeId,
+                awardedAt: badge.awardedAt
+            }))
+        };
+
+        res.json({
+            student: {
+                id: student._id.toString(),
+                name: student.name,
+                email: student.email,
+                image: student.image || '',
+                registeredAt: student.createdAt,
+                lastActiveAt: student.updatedAt || student.createdAt,
+                online: calculateOnlineStatus(student.updatedAt || student.createdAt),
+                learningStyle: student.learningStyle || {},
+                learningStyleLabel: buildStudentLearningLabel(student.learningStyle || {}),
+                featureVector: student.featureVector || null,
+                gamification,
+                courseCount: enrolledCourseIds.length
+            },
+            courses: coursesPayload
+        });
+    } catch (err) {
+        console.error('Admin student detail error:', err);
+        res.status(500).json({ error: 'Failed to load student details' });
+    }
+});
+
+router.get('/admin/students/:studentId/logs', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    try {
+        const context = await buildStudentCourseContext(req.params.studentId);
+        if (!context) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        const { student, playlistToCourse, courseMap } = context;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+        const entries = await models.Interaction.find({ user_id: student._id.toString() })
+            .sort({ timestamp: -1 })
+            .limit(limit)
+            .select('playlist_id annotations timeSpentSeconds completed timestamp')
+            .lean();
+
+        const logs = entries.map((entry) => {
+            const courseId = playlistToCourse.get(entry.playlist_id);
+            const course = courseId ? courseMap.get(courseId) : null;
+            return {
+                id: entry._id?.toString(),
+                courseId,
+                courseTitle: course?.title || 'Course',
+                format: entry.annotations?.format || '—',
+                category: entry.annotations?.category || '—',
+                timeSpentSeconds: entry.timeSpentSeconds,
+                completed: entry.completed,
+                timestamp: entry.timestamp
+            };
+        });
+
+        res.json({
+            student: {
+                id: student._id.toString(),
+                name: student.name
+            },
+            logs
+        });
+    } catch (err) {
+        console.error('Admin student logs error:', err);
+        res.status(500).json({ error: 'Failed to load student logs' });
+    }
+});
+
+router.get('/model/status', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    const status = await checkModelStatus();
+    res.json({
+        running: status.running,
+        message: status.message,
+        checkedAt: new Date().toISOString()
+    });
+});
+
+router.get('/admin/model/logs', auth, async (req, res) => {
+    if (!ensureAdmin(req, res)) return;
+    try {
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+        const [logs, totalRequests, successCount, failureCount, avgDurationDoc, lastSuccess, lastFailure] = await Promise.all([
+            models.ModelLog.find().sort({ createdAt: -1 }).limit(limit).lean(),
+            models.ModelLog.countDocuments(),
+            models.ModelLog.countDocuments({ status: 'success' }),
+            models.ModelLog.countDocuments({ status: 'error' }),
+            models.ModelLog.aggregate([
+                { $group: { _id: null, avgDuration: { $avg: '$durationMs' } } }
+            ]),
+            models.ModelLog.findOne({ status: 'success' }).sort({ createdAt: -1 }).lean(),
+            models.ModelLog.findOne({ status: 'error' }).sort({ createdAt: -1 }).lean()
+        ]);
+        res.json({
+            metrics: {
+                totalRequests,
+                successCount,
+                failureCount,
+                averageDurationMs: avgDurationDoc?.[0]?.avgDuration || 0,
+                lastSuccessAt: lastSuccess?.createdAt || null,
+                lastFailureAt: lastFailure?.createdAt || null
+            },
+            logs
+        });
+    } catch (err) {
+        console.error('Model logs fetch error:', err);
+        res.status(500).json({ error: 'Failed to load model logs' });
     }
 });
 
@@ -815,12 +1413,25 @@ router.post('/predict-style', auth, async (req, res) => {
         // 4. --- CALL PYTHON ML API ---
         const pythonApiUrl = process.env.ML_API_URL || 'http://localhost:5001/predict';
         let predictions;
-        
+        const modelLog = new models.ModelLog({
+            userId,
+            featureVector,
+            status: 'pending'
+        });
+        const startedAt = Date.now();
         try {
             const response = await axios.post(pythonApiUrl, featureVector);
             predictions = response.data;
+            modelLog.prediction = predictions;
+            modelLog.status = 'success';
+            modelLog.durationMs = Date.now() - startedAt;
+            await modelLog.save();
         } catch (err) {
             console.error("Error calling Python API:", err.message);
+            modelLog.status = 'error';
+            modelLog.errorMessage = err.message || 'Prediction server error';
+            modelLog.durationMs = Date.now() - startedAt;
+            await modelLog.save().catch(() => {});
             return res.status(500).send('Prediction server error');
         }
 

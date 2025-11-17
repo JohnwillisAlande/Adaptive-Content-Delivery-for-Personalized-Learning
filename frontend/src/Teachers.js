@@ -24,10 +24,11 @@ const Teachers = () => {
   const userType = user?.userType || null;
   const filteredTutors = useMemo(() => {
     const term = search.toLowerCase();
-    return tutors.filter(tutor =>
-      tutor.name.toLowerCase().includes(term) ||
-      tutor.email.toLowerCase().includes(term)
-    );
+    return tutors.filter((tutor = {}) => {
+      const name = tutor.name || '';
+      const email = tutor.email || '';
+      return name.toLowerCase().includes(term) || email.toLowerCase().includes(term);
+    });
   }, [tutors, search]);
 
   useEffect(() => {
@@ -40,26 +41,16 @@ const Teachers = () => {
     }
 
     setLoading(true);
-    api.get('/teachers')
+    const endpoint = userType === 'Admin' ? '/admin/teachers' : '/teachers';
+    api.get(endpoint)
       .then(({ data }) => {
         setTutors(Array.isArray(data) ? data : []);
-        setLoading(false);
       })
       .catch(() => {
         toast.error('Failed to load teachers');
-        setLoading(false);
-      });
-  }, [initializing, isAuthenticated, navigate]);
-
-  const handleToggleActive = async (id, active) => {
-    try {
-      const { data } = await api.put(`/teachers/${id}/active`, { active: !active });
-      toast.success(data.message || 'Status updated');
-      setTutors(prev => prev.map(t => (t._id === id ? { ...t, active: !active } : t)));
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to update status');
-    }
-  };
+      })
+      .finally(() => setLoading(false));
+  }, [initializing, isAuthenticated, navigate, userType]);
 
   return (
     <section className="teachers">
@@ -79,45 +70,58 @@ const Teachers = () => {
       {loading ? (
         <div className="flex justify-center py-10"><ClipLoader color="#14b8a6" size={32} /></div>
       ) : userType === 'Admin' ? (
-        <div className="overflow-x-auto mt-8">
-          <table className="min-w-full bg-[#1a1d2e] text-white rounded-xl shadow-lg">
-            <thead>
-              <tr className="bg-teal-700 text-white">
-                <th className="px-4 py-3">Image</th>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Profession</th>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Active</th>
-                <th className="px-4 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredTutors.map(tutor => (
-                <tr key={tutor._id} className="border-b border-gray-700">
-                  <td className="px-4 py-2">
-                    <img src={resolveImage(tutor.image)} alt="profile" className="w-12 h-12 object-cover rounded-lg" />
-                  </td>
-                  <td className="px-4 py-2 font-bold">{tutor.name}</td>
-                  <td className="px-4 py-2">{tutor.profession}</td>
-                  <td className="px-4 py-2">{tutor.email}</td>
-                  <td className="px-4 py-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${tutor.active ? 'bg-green-600' : 'bg-red-600'}`}>
-                      {tutor.active ? 'Active' : 'Disabled'}
+        <div className="admin-teachers-board">
+          {filteredTutors.length === 0 ? (
+            <p className="empty">No teachers found.</p>
+          ) : (
+            filteredTutors.map((tutor) => (
+              <article
+                key={tutor.id}
+                className="admin-teacher-row"
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate(`/admin/teachers/${tutor.id}`)}
+                onKeyPress={(event) => {
+                  if (event.key === 'Enter') navigate(`/admin/teachers/${tutor.id}`);
+                }}
+              >
+                <div className="admin-teacher-row__identity">
+                  <img src={resolveImage(tutor.image)} alt={tutor.name} />
+                  <div>
+                    <h3>{tutor.name}</h3>
+                    <p>{tutor.email}</p>
+                    <span className={`status-dot${tutor.online ? ' status-dot--online' : ''}`}>
+                      {tutor.online ? 'Online' : 'Offline'}
                     </span>
-                  </td>
-                  <td className="px-4 py-2 flex gap-2">
-                    <button onClick={() => navigate(`/teachers/${tutor._id}`)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold transition-all duration-300">View</button>
-                    <button
-                      onClick={() => handleToggleActive(tutor._id, tutor.active)}
-                      className={`px-4 py-2 ${tutor.active ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white rounded-lg font-bold transition-all duration-300`}
-                    >
-                      {tutor.active ? 'Disable' : 'Enable'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </div>
+                <div className="admin-teacher-row__metrics">
+                  <div>
+                    <span>Courses</span>
+                    <strong>{tutor.courseCount ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>Students</span>
+                    <strong>{tutor.totalStudents ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>Registered</span>
+                    <strong>{tutor.registeredAt ? new Date(tutor.registeredAt).toLocaleDateString() : '—'}</strong>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="inline-btn admin-teacher-row__cta"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    navigate(`/admin/teachers/${tutor.id}`);
+                  }}
+                >
+                  View Profile
+                </button>
+              </article>
+            ))
+          )}
         </div>
       ) : (
         <div className="box-container">

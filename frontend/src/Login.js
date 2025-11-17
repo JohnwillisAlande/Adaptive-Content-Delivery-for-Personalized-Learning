@@ -84,8 +84,7 @@ function Login() {
   // (Removed duplicate handleGithubLogin)
 
   return (
-    <section className="form-screen">
-      <form onSubmit={handleSubmit} className="form-card form-card--wide">
+      <form onSubmit={handleSubmit} className="form-card form-card--wide form-card--hero">
         <h2 className="form-card__title">Log in to ApexLearn</h2>
         <p className="form-card__subtitle">Choose the correct account type to unlock your personalised dashboard.</p>
 
@@ -194,7 +193,6 @@ function Login() {
           </button>
         </div>
       </form>
-    </section>
   );
 }
 

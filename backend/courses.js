@@ -91,6 +91,83 @@ const findUserById = async (id) => {
   }
 };
 
+const hydrateCourseCreators = async (courses = []) => {
+  if (!Array.isArray(courses) || !courses.length) return;
+
+  const teacherIds = new Set();
+  const playlistObjectIds = new Set();
+  const playlistSlugs = new Set();
+
+  courses.forEach((course) => {
+    if (course?.teacherId) {
+      teacherIds.add(course.teacherId.toString());
+    } else if (course?.playlistId) {
+      playlistObjectIds.add(course.playlistId.toString());
+    }
+    if (course?.id) {
+      playlistSlugs.add(course.id.toString());
+    }
+  });
+
+  const playlistTutorMap = new Map();
+  const playlistFilters = [];
+  if (playlistObjectIds.size) {
+    playlistFilters.push({ _id: { $in: Array.from(playlistObjectIds) } });
+  }
+  if (playlistSlugs.size) {
+    playlistFilters.push({ id: { $in: Array.from(playlistSlugs) } });
+  }
+
+  if (playlistFilters.length) {
+    const playlists = await Playlist.find({ $or: playlistFilters })
+      .select('tutor_id id')
+      .lean();
+    playlists.forEach((playlist) => {
+      const tutorId = playlist?.tutor_id;
+      if (!tutorId) return;
+      const normalized = tutorId.toString();
+      teacherIds.add(normalized);
+      if (playlist?._id) {
+        playlistTutorMap.set(playlist._id.toString(), normalized);
+      }
+      if (playlist?.id) {
+        playlistTutorMap.set(playlist.id.toString(), normalized);
+      }
+    });
+  }
+
+  const normalizedTeacherIds = Array.from(teacherIds).filter((id) =>
+    mongoose.Types.ObjectId.isValid(id)
+  );
+  if (!normalizedTeacherIds.length) return;
+
+  const teacherDocs = await Teacher.find({ _id: { $in: normalizedTeacherIds } })
+    .select('name')
+    .lean();
+  const teacherMap = new Map(
+    teacherDocs.map((teacher) => [teacher._id.toString(), teacher.name])
+  );
+
+  courses.forEach((course) => {
+    let key = course?.teacherId ? course.teacherId.toString() : null;
+    if (!key && course?.playlistId) {
+      key = playlistTutorMap.get(course.playlistId.toString()) || key;
+    }
+    if (!key && course?.id) {
+      key = playlistTutorMap.get(course.id.toString()) || key;
+    }
+    if (key && teacherMap.has(key)) {
+      course.teacherName = teacherMap.get(key);
+    }
+  });
+};
+
+const hydrateSingleCourseCreator = async (course) => {
+  if (!course) return course;
+  await hydrateCourseCreators([course]);
+  return course;
+};
+
 
 // Hardcoded fallback courses
 const COURSE_LIST = [
@@ -162,7 +239,9 @@ const buildCourseSummary = (courseId, storedCourse) => {
     lessons: source.lessons ?? base.lessons ?? 0,
     duration: source.duration || base.duration || '',
     students: source.students ?? base.students ?? 0,
-    featured: source.featured ?? base.featured ?? false
+    featured: source.featured ?? base.featured ?? false,
+    teacherName: source.teacherName || '',
+    suspended: Boolean(source.suspended)
   };
 };
 
@@ -181,6 +260,83 @@ const collectPlaylistKeysWithPlaylists = (course, fallbackId, playlists = []) =>
     if (playlist?._id) keys.add(playlist._id.toString());
   });
   return Array.from(keys).filter(Boolean);
+};
+
+const collectCoursesByTeacher = async (teacherId) => {
+  if (!teacherId) return [];
+  const courses = await Course.find({ teacherId }).sort({ createdAt: -1 }).lean();
+  return courses;
+};
+
+const buildCourseMetricMaps = async (courses = []) => {
+  if (!Array.isArray(courses) || !courses.length) {
+    return {
+      materialTotals: new Map(),
+      formatTotals: new Map(),
+      studentTotals: new Map(),
+      playlistToCourse: new Map(),
+      uniqueStudents: 0
+    };
+  }
+
+  const playlistToCourse = new Map();
+  const playlistKeys = [];
+  const courseIds = [];
+
+  courses.forEach((course) => {
+    const idString = course.id || course._id?.toString();
+    if (idString) courseIds.push(idString);
+    resolveCoursePlaylistKeys(course, course.id).forEach((key) => {
+      if (key) {
+        playlistKeys.push(key);
+        playlistToCourse.set(key, course._id.toString());
+      }
+    });
+  });
+
+  const materialTotals = new Map();
+  const formatTotals = new Map();
+
+  if (playlistKeys.length) {
+    const materialAgg = await Content.aggregate([
+      { $match: { playlist_id: { $in: playlistKeys } } },
+      {
+        $group: {
+          _id: { playlist: '$playlist_id', format: '$annotations.format' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    materialAgg.forEach((entry) => {
+      const courseKey = playlistToCourse.get(entry._id.playlist);
+      if (!courseKey) return;
+      const total = materialTotals.get(courseKey) || 0;
+      materialTotals.set(courseKey, total + entry.count);
+      const formatKey = `${courseKey}:${entry._id.format || 'Unspecified'}`;
+      formatTotals.set(formatKey, (formatTotals.get(formatKey) || 0) + entry.count);
+    });
+  }
+
+  const studentTotals = new Map();
+  let uniqueStudents = 0;
+
+  if (courseIds.length) {
+    const studentAgg = await Student.aggregate([
+      { $match: { enrolledCourses: { $exists: true, $ne: [] } } },
+      { $unwind: '$enrolledCourses' },
+      { $match: { enrolledCourses: { $in: courseIds } } },
+      { $group: { _id: '$enrolledCourses', count: { $sum: 1 } } }
+    ]);
+    studentAgg.forEach((entry) => {
+      studentTotals.set(entry._id, entry.count);
+    });
+    uniqueStudents = await Student.countDocuments({
+      enrolledCourses: { $in: courseIds }
+    });
+  }
+
+  return { materialTotals, formatTotals, studentTotals, playlistToCourse, uniqueStudents };
 };
 
 const applyLearningStylePreferences = (materials, learningStyle) => {
@@ -309,29 +465,40 @@ router.get('/', async (req, res) => {
       getRequestContext(req),
       Course.find().lean()
     ]);
+    await hydrateCourseCreators(storedCourses);
 
     const storedById = new Map(storedCourses.map(course => [course.id, course]));
     const enrolledSet = new Set(
       Array.isArray(user?.enrolledCourses) ? user.enrolledCourses : []
     );
+    const viewerType = user?.constructor?.modelName;
+    const isAdmin = viewerType === 'Admin';
+    const isTeacher = viewerType === 'Teacher';
+    const allowCourse = (summary) => {
+      if (!summary) return false;
+      if (summary.suspended && !(isAdmin || isTeacher)) return false;
+      return true;
+    };
 
     const mergedCourses = COURSE_LIST.map(baseCourse => {
       const override = storedById.get(baseCourse.id);
       if (override) storedById.delete(baseCourse.id);
       const summary = buildCourseSummary(baseCourse.id, override);
-      return {
+      const enriched = {
         ...summary,
         isEnrolled: enrolledSet.has(summary.id)
       };
-    });
+      return allowCourse(enriched) ? enriched : null;
+    }).filter(Boolean);
 
     const additionalCourses = Array.from(storedById.values()).map(course => {
       const summary = buildCourseSummary(course.id, course);
-      return {
+      const enriched = {
         ...summary,
         isEnrolled: enrolledSet.has(summary.id)
       };
-    });
+      return allowCourse(enriched) ? enriched : null;
+    }).filter(Boolean);
 
     res.json([...mergedCourses, ...additionalCourses]);
   } catch (err) {
@@ -353,6 +520,7 @@ router.get('/student/my', async (req, res) => {
 
     const enrolledIds = user.enrolledCourses.filter(Boolean);
     const storedCourses = await Course.find({ id: { $in: enrolledIds } }).lean();
+    await hydrateCourseCreators(storedCourses);
     const storedById = new Map(storedCourses.map(course => [course.id, course]));
 
     const progressPairs = await Promise.all(
@@ -369,6 +537,7 @@ router.get('/student/my', async (req, res) => {
 
     const response = enrolledIds.map(courseId => {
       const summary = buildCourseSummary(courseId, storedById.get(courseId));
+      if (summary.suspended) return null;
       const progress = progressMap.get(courseId) || {
         percent: 0,
         totalMaterials: summary.lessons || 0,
@@ -382,7 +551,7 @@ router.get('/student/my', async (req, res) => {
         totalMaterials: progress.totalMaterials,
         completedMaterials: progress.completedCount
       };
-    });
+    }).filter(Boolean);
 
     res.json(response);
   } catch (err) {
@@ -414,10 +583,13 @@ router.get('/student/for-you', async (req, res) => {
       if (mongoose.Types.ObjectId.isValid(courseId)) {
         courseLookup.push({ _id: courseId });
       }
-      const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+      let storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+      storedCourse = await hydrateSingleCourseCreator(storedCourse);
+      if (storedCourse?.suspended) continue;
       if (!storedCourse) continue;
 
       const courseSummary = buildCourseSummary(courseId, storedCourse);
+      if (courseSummary.suspended) continue;
       const playlistQuery = [{ id: courseId }];
       if (mongoose.Types.ObjectId.isValid(courseId)) {
         playlistQuery.push({ _id: courseId });
@@ -1145,6 +1317,48 @@ router.delete('/teacher/:courseId/materials/:materialId', async (req, res) => {
   }
 });
 // GET /api/courses/manage - List stored courses (admin only)
+router.get('/admin/overview', async (req, res) => {
+  try {
+    const { decoded } = await getRequestContext(req);
+    if (!decoded || decoded.userType !== 'Admin') {
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const courses = await Course.find().sort({ createdAt: -1 }).lean();
+    await hydrateCourseCreators(courses);
+
+    const { materialTotals, formatTotals, studentTotals } = await buildCourseMetricMaps(courses);
+
+    const payload = courses.map((course) => {
+      const idString = course._id.toString();
+      const summary = buildCourseSummary(course.id, course);
+      const visual = formatTotals.get(`${idString}:Visual`) || 0;
+      const verbal = formatTotals.get(`${idString}:Verbal`) || 0;
+      const audio = formatTotals.get(`${idString}:Audio`) || 0;
+      const studentCount = studentTotals.get(summary.id) || 0;
+      return {
+        ...summary,
+        _id: course._id,
+        createdAt: course.createdAt,
+        teacherName: course.teacherName || '',
+        suspended: Boolean(course.suspended),
+        studentCount,
+        materialCount: materialTotals.get(idString) || 0,
+        formatCounts: {
+          Visual: visual,
+          Verbal: verbal,
+          Audio: audio
+        }
+      };
+    });
+
+    res.json(payload);
+  } catch (err) {
+    console.error('Admin courses overview error:', err);
+    res.status(500).json({ error: 'Failed to load courses' });
+  }
+});
+
 router.get('/manage', async (req, res) => {
   try {
     const { decoded } = await getRequestContext(req);
@@ -1264,6 +1478,211 @@ router.put('/:courseId', upload.single('thumb'), async (req, res) => {
   }
 });
 
+// PATCH /api/courses/:courseId/suspend - Toggle course visibility (admin only)
+router.patch('/:courseId/suspend', async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const { decoded } = await getRequestContext(req);
+    if (!decoded || decoded.userType !== 'Admin') {
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const courseLookup = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      courseLookup.push({ _id: courseId });
+    }
+    const course = await Course.findOne({ $or: courseLookup });
+    if (!course) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const desiredState = typeof req.body?.suspended === 'boolean'
+      ? req.body.suspended
+      : !course.suspended;
+    course.suspended = desiredState;
+    await course.save();
+
+    res.json({
+      message: `Course ${desiredState ? 'suspended' : 'unsuspended'}`,
+      course: {
+        id: course.id,
+        suspended: course.suspended
+      }
+    });
+  } catch (err) {
+    console.error('Course suspension toggle error:', err);
+    res.status(500).json({ error: 'Failed to update course suspension state' });
+  }
+});
+
+router.get('/admin/:courseId/metrics', async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const { decoded } = await getRequestContext(req);
+    if (!decoded || decoded.userType !== 'Admin') {
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const courseLookup = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      courseLookup.push({ _id: courseId });
+    }
+
+    let storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    if (!storedCourse) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    storedCourse = await hydrateSingleCourseCreator(storedCourse);
+    const summary = buildCourseSummary(courseId, storedCourse);
+    const playlistKeys = resolveCoursePlaylistKeys(storedCourse, courseId);
+    if (!playlistKeys.length) {
+      playlistKeys.push(courseId);
+    }
+    const normalizedKeys = playlistKeys.map((value) => value.toString());
+    const materialMatch = { playlist_id: { $in: normalizedKeys } };
+
+    const [
+      materialsList,
+      totalMaterials,
+      materialBreakdown,
+      formatBreakdown,
+      interactionStats,
+      recentInteractions,
+      totalEnrollments,
+      materialInteractionStats
+    ] = await Promise.all([
+      Content.find({ playlist_id: { $in: normalizedKeys } })
+        .sort({ order: 1, createdAt: 1 })
+        .lean(),
+      Content.countDocuments(materialMatch),
+      Content.aggregate([
+        { $match: materialMatch },
+        { $group: { _id: '$annotations.category', count: { $sum: 1 } } }
+      ]),
+      Content.aggregate([
+        { $match: materialMatch },
+        { $group: { _id: '$annotations.format', count: { $sum: 1 } } }
+      ]),
+      Interaction.aggregate([
+        { $match: { playlist_id: { $in: normalizedKeys } } },
+        {
+          $group: {
+            _id: null,
+            totalVisits: { $sum: 1 },
+            totalTime: { $sum: '$timeSpentSeconds' },
+            completionCount: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
+            lastInteractionAt: { $max: '$timestamp' },
+            uniqueLearners: { $addToSet: '$user_id' }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            totalVisits: 1,
+            totalTime: 1,
+            completionCount: 1,
+            lastInteractionAt: 1,
+            uniqueLearners: { $size: '$uniqueLearners' }
+          }
+        }
+      ]),
+      Interaction.find({ playlist_id: { $in: normalizedKeys } })
+        .sort({ timestamp: -1 })
+        .limit(8)
+        .select('user_id timeSpentSeconds completed timestamp annotations content_id')
+        .lean(),
+      Student.countDocuments({ enrolledCourses: summary.id }),
+      Interaction.aggregate([
+        { $match: { playlist_id: { $in: normalizedKeys } } },
+        {
+          $group: {
+            _id: '$content_id',
+            clicks: { $sum: 1 },
+            avgTimeSpentSeconds: { $avg: '$timeSpentSeconds' },
+            completions: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
+            lastViewedAt: { $max: '$timestamp' }
+          }
+        }
+      ])
+    ]);
+
+    const materialStatsMap = new Map(
+      materialInteractionStats.map((entry) => [(entry._id || '').toString(), entry])
+    );
+
+    const visitStats = interactionStats[0] || {};
+    const totalVisits = visitStats.totalVisits || 0;
+    const totalTimeSpentSeconds = visitStats.totalTime || 0;
+    const completionCount = visitStats.completionCount || 0;
+    const averageTimePerVisit = totalVisits ? totalTimeSpentSeconds / totalVisits : 0;
+
+    const materialsPayload = materialsList.map((material) => {
+      const materialId = material.id || material._id?.toString();
+      const stats =
+        materialStatsMap.get(materialId) ||
+        materialStatsMap.get(material._id?.toString()) ||
+        {};
+      return {
+        id: materialId,
+        _id: material._id,
+        title: material.title,
+        order: material.order,
+        annotations: material.annotations || {},
+        uploadedAt: material.createdAt || material.updatedAt || null,
+        stats: {
+          clicks: stats.clicks || 0,
+          avgTimeSpentSeconds: stats.avgTimeSpentSeconds || 0,
+          completions: stats.completions || 0,
+          lastViewedAt: stats.lastViewedAt || null
+        }
+      };
+    });
+
+    res.json({
+      course: {
+        id: summary.id,
+        title: summary.title,
+        description: summary.description,
+        teacherName: summary.teacherName || storedCourse.teacherName || '',
+        createdAt: storedCourse.createdAt,
+        suspended: Boolean(storedCourse.suspended)
+      },
+      metrics: {
+        totalMaterials,
+        materialBreakdown: materialBreakdown.map((item) => ({
+          label: item._id || 'Uncategorized',
+          count: item.count
+        })),
+        formatBreakdown: formatBreakdown.map((item) => ({
+          label: item._id || 'Unspecified',
+          count: item.count
+        })),
+        totalEnrollments,
+        totalVisits,
+        uniqueLearners: visitStats.uniqueLearners || 0,
+        totalTimeSpentSeconds,
+        averageTimePerVisit,
+        completionCount,
+        completionRate: totalVisits ? completionCount / totalVisits : 0,
+        lastInteractionAt: visitStats.lastInteractionAt || null,
+        recentInteractions: recentInteractions.map((entry) => ({
+          id: entry._id?.toString(),
+          userId: entry.user_id,
+          timeSpentSeconds: entry.timeSpentSeconds,
+          completed: entry.completed,
+          timestamp: entry.timestamp,
+          annotations: entry.annotations || {}
+        })),
+        materials: materialsPayload
+      }
+    });
+  } catch (err) {
+    console.error('Admin course metrics error:', err);
+    res.status(500).json({ error: 'Failed to load course metrics' });
+  }
+});
+
 // GET /api/courses/:courseId/materials/:materialId - Fetch a single material for playback
 router.get('/:courseId/materials/:materialId', async (req, res) => {
   const { courseId, materialId } = req.params;
@@ -1285,7 +1704,11 @@ router.get('/:courseId/materials/:materialId', async (req, res) => {
     if (mongoose.Types.ObjectId.isValid(courseId)) {
       courseLookup.push({ _id: courseId });
     }
-    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    let storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    storedCourse = await hydrateSingleCourseCreator(storedCourse);
+    if (storedCourse?.suspended && isStudent) {
+      return res.status(403).json({ error: 'This course is currently suspended.' });
+    }
     const materialQuery = [{ id: materialId }];
     if (mongoose.Types.ObjectId.isValid(materialId)) {
       materialQuery.push({ _id: materialId });
@@ -1477,8 +1900,10 @@ router.get('/:courseId', async (req, res) => {
     if (mongoose.Types.ObjectId.isValid(courseId)) {
       courseLookup.push({ _id: courseId });
     }
-    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    let storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    storedCourse = await hydrateSingleCourseCreator(storedCourse);
     const courseSummary = buildCourseSummary(courseId, storedCourse);
+    const isSuspended = Boolean(storedCourse?.suspended);
 
     const isStudent = user?.constructor?.modelName === 'Student';
     const isTeacher = user?.constructor?.modelName === 'Teacher';
@@ -1487,6 +1912,9 @@ router.get('/:courseId', async (req, res) => {
     const isEnrolled = isStudent
       ? Array.isArray(user.enrolledCourses) && user.enrolledCourses.includes(courseId)
       : Boolean(user);
+    if (isSuspended && (isStudent || !user)) {
+      return res.status(403).json({ error: 'This course is currently suspended.' });
+    }
 
     // Fetch playlists for legacy compatibility
     const playlistQuery = [{ id: courseId }];

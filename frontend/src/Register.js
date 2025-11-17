@@ -70,9 +70,8 @@ function Register() {
   };
 
   return (
-    <section className="form-screen">
       <form
-        className="form-card form-card--wide"
+        className="form-card form-card--wide form-card--hero"
         onSubmit={handleSubmit}
         encType="multipart/form-data"
         autoComplete="off"
@@ -208,7 +207,6 @@ function Register() {
           </button>
         </div>
       </form>
-    </section>
   );
 }
 
