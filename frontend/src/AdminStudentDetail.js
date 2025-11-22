@@ -238,18 +238,18 @@ function AdminStudentDetail() {
                         </button>
                         {isExpanded && (
                           <div className="material-accordion__details">
-                            <div>
-                              <span>Clicks</span>
-                              <strong>{formatNumber(material.clicks || 0)}</strong>
-                            </div>
-                            <div>
-                              <span>Time Spent</span>
-                              <strong>{formatDuration(material.totalTimeSpentSeconds || 0)}</strong>
-                            </div>
-                            <div>
-                              <span>Last Viewed</span>
-                              <strong>{formatDate(material.lastViewedAt)}</strong>
-                            </div>
+                      <div>
+                        <span>Clicks</span>
+                        <strong>{formatNumber(material.stats?.clicks || 0)}</strong>
+                      </div>
+                      <div>
+                        <span>Time Spent</span>
+                        <strong>{formatDuration(material.stats?.totalTimeSpentSeconds || 0)}</strong>
+                      </div>
+                      <div>
+                        <span>Last Viewed</span>
+                        <strong>{formatDate(material.stats?.lastViewedAt)}</strong>
+                      </div>
                           </div>
                         )}
                       </div>

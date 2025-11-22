@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { toast } from 'react-toastify';
 import ClipLoader from 'react-spinners/ClipLoader';
 import './App.css';
@@ -26,6 +26,9 @@ const createDefaultStats = () => ({
 });
 
 function Home() {
+  const navigate = useNavigate();
+  const { user, isAuthenticated, initializing } = useAuth();
+  const userType = user?.userType || null;
   const [stats, setStats] = useState(createDefaultStats);
   const [courses, setCourses] = useState([]);
   const [loadingCourses, setLoadingCourses] = useState(false);
@@ -34,10 +37,30 @@ function Home() {
   const [recommendations, setRecommendations] = useState([]);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [recommendationsError, setRecommendationsError] = useState('');
-  const navigate = useNavigate();
-  const { user, isAuthenticated, initializing } = useAuth();
-  const userType = user?.userType || null;
+  const [showQuickOptions, setShowQuickOptions] = useState(false);
+  const [streakPopup, setStreakPopup] = useState({ visible: false, value: 0 });
+  const streakCountRef = useRef(user?.streaks?.login?.count ?? 0);
+  const streakPopupTimerRef = useRef(null);
   const [suspendingId, setSuspendingId] = useState(null);
+  const showStreakPopupNow = useCallback((value) => {
+    if (!value) return;
+    if (streakPopupTimerRef.current) {
+      clearTimeout(streakPopupTimerRef.current);
+    }
+    setStreakPopup({ visible: true, value });
+    streakPopupTimerRef.current = setTimeout(() => {
+      setStreakPopup(prev => ({ ...prev, visible: false }));
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (streakPopupTimerRef.current) {
+        clearTimeout(streakPopupTimerRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (initializing) return;
     if (userType === 'Admin') {
@@ -105,6 +128,27 @@ function Home() {
       setStats(createDefaultStats());
     }
   }, [initializing, userType, isAuthenticated, user?.xp, user?.badges?.length, user?.streaks, user?.dailyGoal]);
+
+  useEffect(() => {
+    if (userType !== 'Student') return;
+    const loginCount = user?.streaks?.login?.count ?? 0;
+    if (loginCount > streakCountRef.current) {
+      showStreakPopupNow(loginCount);
+    }
+    streakCountRef.current = loginCount;
+  }, [user?.streaks?.login?.count, userType, showStreakPopupNow]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (userType !== 'Student') return;
+      const loginCount = user?.streaks?.login?.count ?? 0;
+      if (loginCount > 0) {
+        showStreakPopupNow(loginCount);
+      }
+    };
+    window.addEventListener('show-streak-popup', handler);
+    return () => window.removeEventListener('show-streak-popup', handler);
+  }, [userType, user?.streaks?.login?.count, showStreakPopupNow]);
   // Filter courses by search
   const filteredCourses = courses.filter(course =>
     course.title?.toLowerCase().includes(search.toLowerCase())
@@ -235,9 +279,84 @@ function Home() {
   // Non-admin: original home view
   return (
     <div>
-      <section className="quick-select">
-        <h1 className="heading">Quick Options</h1>
-        <div className="box-container">
+      <section className="home-hero">
+        <div className="home-hero__layers">
+          <span className="home-hero__orb orb-1" />
+          <span className="home-hero__orb orb-2" />
+          <span className="home-hero__orb orb-3" />
+          <span className="home-hero__wave" />
+        </div>
+        <div className="home-hero__content">
+          <p className="home-hero__eyebrow">Adaptive pathways</p>
+          <h1>Learn dynamically, every single day</h1>
+          <p>
+            ApexLearn curates courses, materials, and challenges that evolve with every interaction.
+            Jump back in, earn XP, and let your learning style guide the journey.
+          </p>
+          <div className="home-hero__actions">
+            <Link to="/courses" className="inline-btn home-hero__cta">
+              Explore Courses
+            </Link>
+            <button
+              type="button"
+              className="inline-btn home-hero__cta home-hero__cta--ghost"
+              onClick={() => setShowQuickOptions(true)}
+            >
+              Quick Options
+            </button>
+          </div>
+          <div className="home-hero__stats">
+            <div>
+              <span>XP</span>
+              <strong>{stats.xp}</strong>
+            </div>
+            <div>
+              <span>Badges</span>
+              <strong>{stats.badges}</strong>
+            </div>
+            <div>
+              <span>Login Streak</span>
+              <strong>{stats.loginStreak} day{stats.loginStreak === 1 ? '' : 's'}</strong>
+            </div>
+          </div>
+        </div>
+        <div className="home-hero__cards">
+          <article className="home-floating-card">
+            <h3>Engage</h3>
+            <p>Earn XP by completing more materials and streaks.</p>
+          </article>
+          <article className="home-floating-card">
+            <h3>Adapt</h3>
+            <p>AI tailors quizzes and content using your interactions.</p>
+          </article>
+          <article className="home-floating-card">
+            <h3>Celebrate</h3>
+            <p>Unlock badges and climb leaderboards with friends.</p>
+          </article>
+        </div>
+      </section>
+      {streakPopup.visible && (
+        <div className="streak-popup" role="status" aria-live="polite">
+          <div className="streak-popup__content">
+            <div className="streak-popup__fire">🔥</div>
+            <div className="streak-popup__value">{streakPopup.value} day{streakPopup.value === 1 ? '' : 's'}</div>
+            <div className="streak-popup__label">streak</div>
+          </div>
+        </div>
+      )}
+      <section className={`quick-select${showQuickOptions ? ' quick-select--open' : ''}`}>
+        <button
+          type="button"
+          className="heading quick-select__toggle"
+          onClick={() => setShowQuickOptions(prev => !prev)}
+          aria-expanded={showQuickOptions}
+          aria-controls="quick-options-panel"
+        >
+          Quick Options
+          <span className={`quick-select__chevron${showQuickOptions ? ' is-open' : ''}`} aria-hidden="true">⌄</span>
+        </button>
+        {showQuickOptions && (
+        <div className="box-container" id="quick-options-panel">
           {/* ...existing code... */}
           {!isAuthenticated ? (
             <div className="box" style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
@@ -321,6 +440,7 @@ function Home() {
             </div>
           </div>
         </div>
+        )}
       </section>
       <section className="courses">
         <h1 className="heading">For You</h1>

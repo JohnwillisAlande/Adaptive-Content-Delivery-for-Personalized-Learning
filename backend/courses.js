@@ -5,7 +5,7 @@ const path = require('path');
 const multer = require('multer');
 const mongoose = require('mongoose');
 // --- FIXED: Import all models, including the new User types ---
-const { Content, Playlist, Student, Teacher, Admin, Course, Interaction, CourseLike, CourseComment } = require('./models');
+const { Content, Playlist, Student, Teacher, Admin, Course, Interaction, CourseLike, CourseComment, Quiz } = require('./models');
 const { handleMaterialInteraction, handleCourseProgress } = require('./gamification');
 const jwt = require('jsonwebtoken');
 
@@ -260,6 +260,144 @@ const collectPlaylistKeysWithPlaylists = (course, fallbackId, playlists = []) =>
     if (playlist?._id) keys.add(playlist._id.toString());
   });
   return Array.from(keys).filter(Boolean);
+};
+
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_KEY || '';
+
+const buildMaterialTextContext = (material) => {
+  const chunks = [];
+  if (material.title) chunks.push(`Title: ${material.title}`);
+  if (material.description) chunks.push(`Description: ${material.description}`);
+  if (material.annotations) {
+    chunks.push(
+      `Annotations: format=${material.annotations.format || 'Unknown'}, category=${material.annotations.category || 'Unknown'}, type=${material.annotations.type || 'Unknown'}`
+    );
+  }
+  if (typeof material.order === 'number') {
+    chunks.push(`Lesson order: ${material.order}`);
+  }
+  if (material.textContent) {
+    chunks.push(`Body: ${material.textContent.slice(0, 4000)}`);
+  }
+  return chunks.join('\n');
+};
+
+const extractJsonFromModelResponse = (text) => {
+  if (!text) return null;
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      return null;
+    }
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+const sanitizeQuizQuestions = (payload) => {
+  if (!payload || !Array.isArray(payload.questions)) return [];
+  return payload.questions
+    .map((item) => {
+      if (!item || !item.question) return null;
+      const options = Array.isArray(item.options) ? item.options.filter(Boolean) : [];
+      if (!options.length) return null;
+      return {
+        question: item.question,
+        options,
+        answer: item.answer || options[0],
+        explanation: item.explanation || ''
+      };
+    })
+    .filter(Boolean);
+};
+
+const generateQuizWithGemini = async (material) => {
+  if (!GEMINI_API_KEY) {
+    throw new Error('Gemini API key is not configured.');
+  }
+  const prompt = [
+    'You are an educational assistant. Generate 4 multiple-choice questions assessing comprehension of the provided lesson content.',
+    'Respond with strict JSON in the following format:',
+    '{"questions":[{"question":"","options":["",""],"answer":"","explanation":""}]}',
+    'Ensure each question has 3-4 options and only one correct answer. Focus on Bloom\'s taxonomy with application or analysis level questions.',
+    '',
+    buildMaterialTextContext(material)
+  ].join('\n');
+
+  const requestBody = {
+    contents: [
+      {
+        parts: [{ text: prompt }]
+      }
+    ]
+  };
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    }
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(errorBody || 'Gemini request failed');
+  }
+
+  const data = await response.json();
+  const text =
+    data?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('\n') || '';
+  const parsed = extractJsonFromModelResponse(text);
+  const questions = sanitizeQuizQuestions(parsed);
+  if (!questions.length) {
+    throw new Error('Model did not return quiz questions.');
+  }
+  return {
+    questions,
+    model: GEMINI_MODEL
+  };
+};
+
+const loadCourseAndMaterial = async (courseId, materialId) => {
+  const courseLookup = [{ id: courseId }];
+  if (mongoose.Types.ObjectId.isValid(courseId)) {
+    courseLookup.push({ _id: courseId });
+  }
+  const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+  const courseSummary = buildCourseSummary(courseId, storedCourse);
+
+  const playlistQuery = [{ id: courseId }];
+  if (mongoose.Types.ObjectId.isValid(courseId)) {
+    playlistQuery.push({ _id: courseId });
+  }
+  if (storedCourse?.playlistId && mongoose.Types.ObjectId.isValid(storedCourse.playlistId)) {
+    playlistQuery.push({ _id: storedCourse.playlistId });
+  }
+  const playlists = await Playlist.find({ $or: playlistQuery }).lean();
+  const playlistKeys = collectPlaylistKeysWithPlaylists(storedCourse, courseId, playlists);
+  if (!playlistKeys.length) playlistKeys.push(courseId);
+
+  const materialQuery = [{ id: materialId }];
+  if (mongoose.Types.ObjectId.isValid(materialId)) {
+    materialQuery.push({ _id: materialId });
+  }
+
+  const material = await Content.findOne({
+    playlist_id: { $in: playlistKeys },
+    $or: materialQuery
+  }).lean();
+
+  return { courseSummary, material };
 };
 
 const collectCoursesByTeacher = async (teacherId) => {
@@ -1600,6 +1738,7 @@ router.get('/admin/:courseId/metrics', async (req, res) => {
             _id: '$content_id',
             clicks: { $sum: 1 },
             avgTimeSpentSeconds: { $avg: '$timeSpentSeconds' },
+            totalTimeSpentSeconds: { $sum: '$timeSpentSeconds' },
             completions: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
             lastViewedAt: { $max: '$timestamp' }
           }
@@ -1633,6 +1772,7 @@ router.get('/admin/:courseId/metrics', async (req, res) => {
         stats: {
           clicks: stats.clicks || 0,
           avgTimeSpentSeconds: stats.avgTimeSpentSeconds || 0,
+          totalTimeSpentSeconds: stats.totalTimeSpentSeconds || 0,
           completions: stats.completions || 0,
           lastViewedAt: stats.lastViewedAt || null
         }
@@ -1880,6 +2020,70 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
   } catch (err) {
     console.error('Material interaction error:', err);
     res.status(500).json({ error: 'Failed to record interaction' });
+  }
+});
+
+router.get('/:courseId/materials/:materialId/quiz', async (req, res) => {
+  const { courseId, materialId } = req.params;
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const quiz = await Quiz.findOne({ courseId, materialId }).sort({ createdAt: -1 }).lean();
+    res.json({ quiz });
+  } catch (err) {
+    console.error('Quiz fetch error:', err);
+    res.status(500).json({ error: 'Failed to load quiz' });
+  }
+});
+
+router.post('/:courseId/materials/:materialId/quiz', async (req, res) => {
+  const { courseId, materialId } = req.params;
+  const refresh = req.query.refresh === 'true';
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const userType = user.constructor?.modelName;
+    if (userType === 'Student') {
+      if (!Array.isArray(user.enrolledCourses) || !user.enrolledCourses.includes(courseId)) {
+        return res.status(403).json({ error: 'Enroll in this course to generate quizzes.' });
+      }
+    }
+
+    if (!refresh) {
+      const existing = await Quiz.findOne({ courseId, materialId }).sort({ createdAt: -1 }).lean();
+      if (existing) {
+        return res.json({ quiz: existing });
+      }
+    }
+
+    const { courseSummary, material } = await loadCourseAndMaterial(courseId, materialId);
+    if (!material) {
+      return res.status(404).json({ error: 'Material not found' });
+    }
+
+    if (!material.textContent && !material.description) {
+      return res.status(400).json({ error: 'This material does not contain textual content for quiz generation.' });
+    }
+
+    const quizPayload = await generateQuizWithGemini(material);
+    const materialKey = material.id || material._id?.toString();
+    const created = await Quiz.create({
+      courseId: courseSummary.id,
+      materialId: materialKey,
+      createdBy: user._id || null,
+      model: quizPayload.model,
+      questions: quizPayload.questions
+    });
+
+    res.json({ quiz: created });
+  } catch (err) {
+    console.error('Quiz generation error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate quiz' });
   }
 });
 

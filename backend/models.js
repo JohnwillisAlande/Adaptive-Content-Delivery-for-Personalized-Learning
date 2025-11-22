@@ -195,6 +195,14 @@ const StudentSchema = new mongoose.Schema({
     is_reflective: { type: Number, default: 0 },// 0=Active, 1=Reflective
     is_global: { type: Number, default: 0 }     // 0=Sequential, 1=Global
   },
+
+  learningProfile: {
+    activeReflective: { type: Number, default: 0 },
+    sensingIntuitive: { type: Number, default: 0 },
+    visualVerbal: { type: Number, default: 0 },
+    sequentialGlobal: { type: Number, default: 0 },
+    isAssessed: { type: Boolean, default: false }
+  },
   
   featureVector: { type: Object, default: null } 
 }, { timestamps: true });
@@ -269,6 +277,28 @@ const InteractionSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 });
 
+const QuizSchema = new mongoose.Schema(
+  {
+    courseId: { type: String, required: true },
+    materialId: { type: String, required: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', default: null },
+    model: { type: String, default: 'gemini-1.5-flash' },
+    promptTokens: { type: Number, default: 0 },
+    responseTokens: { type: Number, default: 0 },
+    questions: [
+      {
+        question: { type: String, required: true },
+        options: [{ type: String }],
+        answer: { type: String, required: true },
+        explanation: { type: String, default: '' }
+      }
+    ]
+  },
+  { timestamps: true }
+);
+
+QuizSchema.index({ courseId: 1, materialId: 1, createdAt: -1 });
+
 const ModelLogSchema = new mongoose.Schema(
   {
     userId: { type: String, default: '' },
@@ -301,5 +331,6 @@ module.exports = {
   PasswordReset: mongoose.model('PasswordReset', PasswordResetSchema),
   About: mongoose.model('About', AboutSchema),
   Interaction: mongoose.model('Interaction', InteractionSchema), // --- ADDED ---
+  Quiz: mongoose.model('Quiz', QuizSchema),
   ModelLog: mongoose.model('ModelLog', ModelLogSchema)
 };

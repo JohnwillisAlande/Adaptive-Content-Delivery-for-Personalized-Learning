@@ -82,6 +82,14 @@ function MaterialViewer() {
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [showNotepad, setShowNotepad] = useState(false);
   const [notes, setNotes] = useState('');
+  const [aiQuizState, setAiQuizState] = useState({
+    quiz: null,
+    loading: false,
+    generating: false,
+    error: ''
+  });
+  const [aiQuizAnswers, setAiQuizAnswers] = useState({});
+  const [aiQuizSubmitted, setAiQuizSubmitted] = useState(false);
 
   const notesHydratedRef = useRef(false);
 
@@ -97,8 +105,8 @@ function MaterialViewer() {
     return `materialViewerNotes:${userId}`;
   }, [user?._id, user?.id, user?.userId]);
 
-  const flashcards = useMemo(() => buildFlashcards(material), [material]);
-  const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [material]);
+const flashcards = useMemo(() => buildFlashcards(material), [material]);
+const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [material]);
 
   const buildContentObject = useCallback(() => {
     if (!material) return null;
@@ -178,6 +186,78 @@ function MaterialViewer() {
     },
     [courseId, materialId, user, refresh]
   );
+
+  const loadAiQuiz = useCallback(async () => {
+    if (!courseId || !materialId) return;
+    setAiQuizState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const { data } = await api.get(`/courses/${courseId}/materials/${materialId}/quiz`);
+      setAiQuizState({
+        quiz: data?.quiz || null,
+        loading: false,
+        generating: false,
+        error: ''
+      });
+      setAiQuizAnswers({});
+      setAiQuizSubmitted(false);
+    } catch (err) {
+      setAiQuizState((prev) => ({
+        ...prev,
+        loading: false,
+        error: err.response?.data?.error || 'Failed to load quiz'
+      }));
+    }
+  }, [courseId, materialId]);
+
+  const generateAiQuiz = useCallback(
+    async (forceRefresh = false) => {
+      if (!courseId || !materialId) return;
+      setAiQuizState((prev) => ({ ...prev, generating: true, error: '' }));
+      try {
+        const endpoint = `/courses/${courseId}/materials/${materialId}/quiz${forceRefresh ? '?refresh=true' : ''}`;
+        const { data } = await api.post(endpoint);
+        setAiQuizState({
+          quiz: data?.quiz || null,
+          loading: false,
+          generating: false,
+          error: ''
+        });
+        setAiQuizAnswers({});
+        setAiQuizSubmitted(false);
+      } catch (err) {
+        setAiQuizState((prev) => ({
+          ...prev,
+          generating: false,
+          error: err.response?.data?.error || 'Failed to generate quiz'
+        }));
+      }
+    },
+    [courseId, materialId]
+  );
+
+  useEffect(() => {
+    setAiQuizState({
+      quiz: null,
+      loading: false,
+      generating: false,
+      error: ''
+    });
+    setAiQuizAnswers({});
+    setAiQuizSubmitted(false);
+    loadAiQuiz();
+  }, [courseId, materialId, loadAiQuiz]);
+
+  const handleAiQuizSelection = (questionIndex, option) => {
+    setAiQuizAnswers((prev) => ({
+      ...prev,
+      [questionIndex]: option
+    }));
+  };
+
+  const handleAiQuizSubmit = () => {
+    if (!aiQuizState.quiz) return;
+    setAiQuizSubmitted(true);
+  };
 
   useEffect(() => {
     let active = true;
@@ -626,11 +706,88 @@ function MaterialViewer() {
           </div>
         </div>
       )}
+      <section className="material-quiz-card">
+        <div className="material-quiz-card__header">
+          <div>
+            <h2>AI Practice Quiz</h2>
+            <p>Let Gemini generate targeted questions from this material.</p>
+          </div>
+          <div className="material-quiz-card__actions">
+            <button
+              type="button"
+              className="inline-btn inline-btn--ghost"
+              onClick={() => loadAiQuiz()}
+              disabled={aiQuizState.loading || aiQuizState.generating}
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              className="inline-btn"
+              onClick={() => generateAiQuiz(Boolean(aiQuizState.quiz))}
+              disabled={aiQuizState.generating}
+            >
+              {aiQuizState.generating ? 'Generating…' : aiQuizState.quiz ? 'Regenerate' : 'Generate Quiz'}
+            </button>
+          </div>
+        </div>
+        {aiQuizState.error && <p className="text-red-400 mb-3">{aiQuizState.error}</p>}
+        {aiQuizState.loading ? (
+          <div className="flex justify-center py-6">
+            <ClipLoader color="#14b8a6" />
+          </div>
+        ) : aiQuizState.quiz ? (
+          <div className="material-quiz-card__body">
+            {aiQuizState.quiz.questions.map((item, index) => {
+              const selected = aiQuizAnswers[index];
+              const isCorrect = aiQuizSubmitted && selected === item.answer;
+              const isWrong = aiQuizSubmitted && selected && selected !== item.answer;
+              return (
+                <article key={`quiz-${index}`} className={`quiz-question${isCorrect ? ' quiz-question--correct' : ''}${isWrong ? ' quiz-question--incorrect' : ''}`}>
+                  <h3>
+                    {index + 1}. {item.question}
+                  </h3>
+                  <div className="quiz-options">
+                    {item.options?.map((option) => (
+                      <label key={`${index}-${option}`} className="quiz-option">
+                        <input
+                          type="radio"
+                          name={`quiz-${index}`}
+                          value={option}
+                          checked={selected === option}
+                          onChange={() => handleAiQuizSelection(index, option)}
+                          disabled={aiQuizSubmitted}
+                        />
+                        <span>{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {aiQuizSubmitted && (
+                    <div className="quiz-feedback">
+                      <p>{isCorrect ? 'Correct!' : `Correct answer: ${item.answer}`}</p>
+                      {item.explanation && <p className="quiz-feedback__explanation">{item.explanation}</p>}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+            {!aiQuizSubmitted && aiQuizState.quiz.questions.length > 0 && (
+              <button
+                type="button"
+                className="inline-btn"
+                onClick={handleAiQuizSubmit}
+                disabled={aiQuizState.generating || aiQuizState.loading}
+              >
+                Check Answers
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="muted">No quiz has been generated for this material yet. Click “Generate Quiz” to get started.</p>
+        )}
+      </section>
     </div>
   );
 }
 
 export default MaterialViewer;
-
-
-

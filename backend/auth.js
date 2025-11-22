@@ -1485,6 +1485,43 @@ router.post('/set-style', auth, async (req, res) => {
     }
 });
 
+/**
+ * ROUTE 4: Store explicit learning-profile data from the AI tutor
+ * URL: PUT /api/learning-profile
+ */
+const handleLearningProfileUpdate = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { profile } = req.body || {};
+
+        if (!profile || typeof profile !== 'object') {
+            return res.status(400).json({ error: 'Profile object is required.' });
+        }
+
+        const student = await models.Student.findById(userId);
+        if (!student) {
+            return res.status(403).json({ error: 'Only student accounts can update learning profiles.' });
+        }
+
+        student.learningProfile = {
+            activeReflective: Number(profile.activeReflective ?? student.learningProfile?.activeReflective ?? 0),
+            sensingIntuitive: Number(profile.sensingIntuitive ?? student.learningProfile?.sensingIntuitive ?? 0),
+            visualVerbal: Number(profile.visualVerbal ?? student.learningProfile?.visualVerbal ?? 0),
+            sequentialGlobal: Number(profile.sequentialGlobal ?? student.learningProfile?.sequentialGlobal ?? 0),
+            isAssessed: profile.isAssessed !== undefined ? !!profile.isAssessed : true
+        };
+
+        await student.save();
+        res.json(student.learningProfile);
+    } catch (err) {
+        console.error('Learning profile update error:', err);
+        res.status(500).json({ error: 'Server error while updating learning profile' });
+    }
+};
+
+router.put('/learning-profile', auth, handleLearningProfileUpdate);
+router.put('/update-learning-profile', auth, handleLearningProfileUpdate);
+
 // 5. MODULE EXPORT
 module.exports = router;
 

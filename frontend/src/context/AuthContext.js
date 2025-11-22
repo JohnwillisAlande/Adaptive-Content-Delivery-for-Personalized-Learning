@@ -104,6 +104,7 @@ export const AuthProvider = ({ children }) => {
   const value = useMemo(
     () => ({
       user,
+      setUser,
       initializing,
       isAuthenticated: Boolean(user),
       login,

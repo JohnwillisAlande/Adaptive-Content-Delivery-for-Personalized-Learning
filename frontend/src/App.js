@@ -12,6 +12,7 @@ import Students from './Students';
 import About from './About';
 import Contact from './Contact';
 import Landing from './Landing';
+import AiTutor from './AiTutor';
 import ForgotPassword from './ForgotPassword';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import NewPassword from './NewPassword';
@@ -36,9 +37,11 @@ const AdminModel = React.lazy(() => import('./AdminModel'));
 
 
 function App() {
-  const { initializing, isAuthenticated } = useAuth();
+  const { initializing, isAuthenticated, user } = useAuth();
 
   const guard = (node) => (isAuthenticated ? node : <Landing />);
+  const studentGuard = (node) =>
+    isAuthenticated && user?.userType === 'Student' ? node : <Navigate to={isAuthenticated ? '/home' : '/'} replace />;
 
   if (initializing) {
     return (
@@ -59,6 +62,7 @@ function App() {
           <Route path="/register" element={isAuthenticated ? <Navigate to="/home" replace /> : <Register />} />
           <Route path="/home" element={guard(<Home />)} />
           <Route path="/courses" element={guard(<Courses />)} />
+          <Route path="/ai-tutor" element={studentGuard(<AiTutor />)} />
           <Route
             path="/courses/:courseId"
             element={guard(

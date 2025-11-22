@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { FaSync } from 'react-icons/fa';
 import { ClipLoader } from 'react-spinners';
@@ -54,7 +54,10 @@ function UserHeader() {
       { to: '/courses', label: 'Courses' }
     ];
     if (user?.userType === 'Student') {
-      links.push({ to: '/student/courses', label: 'My Courses' });
+      links.push(
+        { to: '/student/courses', label: 'My Courses' },
+        { to: '/ai-tutor', label: 'ApexLearn ChatBot' }
+      );
     }
     if (user?.userType === 'Teacher') {
       links.push(
@@ -62,13 +65,15 @@ function UserHeader() {
         { to: '/teacher/materials', label: 'Upload' }
       );
     }
-    links.push({ to: '/teachers', label: 'Teachers' });
     if (user?.userType === 'Admin') {
-      links.push({ to: '/students', label: 'Students' }, { to: '/admin/model', label: 'Model' });
+      links.push({ to: '/students', label: 'Students' }, { to: '/admin/model', label: 'Model' }, { to: '/teachers', label: 'Teachers' });
     }
     links.push({ to: '/about', label: 'About' }, { to: '/contact', label: 'Contact' });
     return links;
   }, [user?.userType]);
+  const triggerStreakPopup = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('show-streak-popup'));
+  }, []);
 
   useEffect(() => {
     if (sidebarOpen) {
@@ -192,11 +197,18 @@ function UserHeader() {
               <span>{displayRole}</span>
               {studentMetrics && (
                 <div className="sidebar-metrics" aria-label="Student progress summary">
-                  <span><i className="fas fa-bolt" aria-hidden="true"></i>{studentMetrics.xp}</span>
-                  <span><i className="fas fa-medal" aria-hidden="true"></i>{studentMetrics.badgeCount}</span>
-                  <span><i className="fas fa-fire" aria-hidden="true"></i>{studentMetrics.loginStreak}</span>
-                </div>
-              )}
+              <span><i className="fas fa-bolt" aria-hidden="true"></i>{studentMetrics.xp}</span>
+              <span><i className="fas fa-medal" aria-hidden="true"></i>{studentMetrics.badgeCount}</span>
+              <button
+                type="button"
+                className="sidebar-metrics__streak"
+                onClick={triggerStreakPopup}
+                aria-label="Show streak celebration"
+              >
+                <i className="fas fa-fire" aria-hidden="true"></i>{studentMetrics.loginStreak}
+              </button>
+            </div>
+          )}
               <Link to="/profile" className="btn sidebar-profile-btn">View profile</Link>
             </>
           ) : (
@@ -213,7 +225,10 @@ function UserHeader() {
           <Link to="/home"><i className="fas fa-home"></i><span>Home</span></Link>
           <Link to="/courses"><i className="fas fa-graduation-cap"></i><span>Courses</span></Link>
           {user?.userType === 'Student' && (
-            <Link to="/student/courses"><i className="fas fa-layer-group"></i><span>My Courses</span></Link>
+            <>
+              <Link to="/student/courses"><i className="fas fa-layer-group"></i><span>My Courses</span></Link>
+              <Link to="/ai-tutor"><i className="fas fa-robot"></i><span>ApexLearn ChatBot</span></Link>
+            </>
           )}
           {user?.userType === 'Teacher' && (
             <>
@@ -221,11 +236,11 @@ function UserHeader() {
               <Link to="/teacher/materials"><i className="fas fa-upload"></i><span>Upload Material</span></Link>
             </>
           )}
-          <Link to="/teachers"><i className="fas fa-chalkboard-user"></i><span>Teachers</span></Link>
           {user?.userType === 'Admin' && (
             <>
               <Link to="/students"><i className="fas fa-users"></i><span>Students</span></Link>
               <Link to="/admin/model"><i className="fas fa-robot"></i><span>Model</span></Link>
+              <Link to="/teachers"><i className="fas fa-chalkboard-user"></i><span>Teachers</span></Link>
             </>
           )}
           <Link to="/about"><i className="fas fa-question"></i><span>About Us</span></Link>
