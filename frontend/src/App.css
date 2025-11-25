@@ -1439,6 +1439,258 @@ body.dark .side-bar .navbar a span{
 body.dark .side-bar .profile h3{
    color: #f8fafc;
 }
+
+.student-analytics {
+   padding: clamp(2rem, 4vw, 4rem);
+   color: #e2e8f0;
+   min-height: 100vh;
+}
+.student-analytics--loading,
+.student-analytics--error {
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   min-height: 60vh;
+   color: #cbd5f5;
+}
+.student-analytics__hero {
+   display: flex;
+   flex-wrap: wrap;
+   justify-content: space-between;
+   gap: 2rem;
+   margin-bottom: 2.4rem;
+}
+.student-analytics__eyebrow {
+   text-transform: uppercase;
+   letter-spacing: 0.25rem;
+   font-size: 1.1rem;
+   color: #38bdf8;
+   margin-bottom: 0.5rem;
+}
+.student-analytics__hero h1 {
+   font-size: clamp(2.4rem, 4vw, 3.2rem);
+   margin: 0 0 0.6rem;
+}
+.student-analytics__profile {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+   gap: 1rem;
+   background: rgba(15, 23, 42, 0.6);
+   padding: 1.2rem 1.6rem;
+   border-radius: 1.4rem;
+   border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.student-analytics__profile .label {
+   font-size: 1.2rem;
+   color: #94a3b8;
+   margin-bottom: 0.4rem;
+}
+.student-analytics__profile .value {
+   font-size: 2rem;
+   font-weight: 700;
+}
+.student-analytics__summary {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+   gap: 1.4rem;
+   margin-bottom: 2.4rem;
+}
+.student-analytics__summary article {
+   border-radius: 1.2rem;
+   border: 1px solid rgba(148, 163, 184, 0.2);
+   padding: 1.4rem;
+   background: radial-gradient(circle at top, rgba(56, 189, 248, 0.12), rgba(15, 23, 42, 0.8));
+}
+.student-analytics__summary .label {
+   color: #94a3b8;
+   font-size: 1.2rem;
+   margin-bottom: 0.4rem;
+}
+.student-analytics__summary .value {
+   font-size: 2.2rem;
+   font-weight: 700;
+}
+.student-analytics__summary .value--small {
+   font-size: 1.4rem;
+}
+.student-analytics__summary span {
+   color: rgba(148, 163, 184, 0.8);
+   font-size: 1.2rem;
+}
+.student-analytics__section {
+   border-radius: 1.4rem;
+   border: 1px solid rgba(148, 163, 184, 0.2);
+   background: rgba(6, 11, 26, 0.8);
+   padding: clamp(1.6rem, 3vw, 2rem);
+   margin-bottom: 2.4rem;
+}
+.student-analytics__section h2 {
+   margin: 0 0 0.6rem;
+}
+.student-analytics__section-header {
+   display: flex;
+   justify-content: space-between;
+   gap: 1rem;
+   align-items: flex-start;
+   flex-wrap: wrap;
+   margin-bottom: 1rem;
+}
+.analytics-chart {
+   border-radius: 1.2rem;
+   border: 1px solid rgba(148, 163, 184, 0.2);
+   padding: 1.2rem;
+   background: rgba(15, 23, 42, 0.6);
+}
+.analytics-chart__bars {
+   display: flex;
+   flex-direction: column;
+   gap: 1rem;
+}
+.analytics-chart__bar-label {
+   display: flex;
+   justify-content: space-between;
+   font-size: 1.3rem;
+   color: #cbd5f5;
+}
+.analytics-chart__bar-track {
+   height: 0.9rem;
+   border-radius: 999px;
+   background: rgba(148, 163, 184, 0.2);
+   overflow: hidden;
+}
+.analytics-chart__bar-fill {
+   height: 100%;
+   border-radius: 999px;
+   transition: width 0.3s ease;
+}
+.analytics-chart__pie {
+   display: flex;
+   flex-wrap: wrap;
+   gap: 1.6rem;
+   align-items: center;
+}
+.analytics-chart__pie-graphic {
+   width: 160px;
+   height: 160px;
+   border-radius: 50%;
+   border: 6px solid rgba(15, 23, 42, 0.6);
+}
+.analytics-chart__legend {
+   list-style: none;
+   padding: 0;
+   margin: 0;
+   display: flex;
+   flex-direction: column;
+   gap: 0.6rem;
+}
+.analytics-chart__legend li {
+   display: flex;
+   align-items: center;
+   gap: 0.6rem;
+   font-size: 1.3rem;
+}
+.analytics-chart__legend .dot {
+   width: 12px;
+   height: 12px;
+   border-radius: 50%;
+   display: inline-flex;
+}
+.analytics-chart__controls {
+   position: relative;
+}
+.analytics-chart__toggle {
+   padding: 0.6rem 1.4rem;
+   border-radius: 999px;
+   border: 1px solid rgba(148, 163, 184, 0.4);
+   background: transparent;
+   color: #e2e8f0;
+   cursor: pointer;
+}
+.analytics-chart__menu {
+   position: absolute;
+   right: 0;
+   top: calc(100% + 0.4rem);
+   background: rgba(15, 23, 42, 0.95);
+   border: 1px solid rgba(148, 163, 184, 0.25);
+   border-radius: 1rem;
+   padding: 0.4rem;
+   min-width: 160px;
+   display: flex;
+   flex-direction: column;
+   gap: 0.4rem;
+   z-index: 5;
+}
+.analytics-chart__menu button {
+   background: transparent;
+   border: none;
+   color: #e2e8f0;
+   text-align: left;
+   padding: 0.6rem 0.8rem;
+   border-radius: 0.6rem;
+   cursor: pointer;
+}
+.analytics-chart__menu button.is-active,
+.analytics-chart__menu button:hover {
+   background: rgba(56, 189, 248, 0.12);
+   color: #38bdf8;
+}
+.student-analytics__timeline {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+   gap: 1rem;
+   min-height: 140px;
+   align-items: end;
+}
+.timeline-point {
+   display: flex;
+   flex-direction: column;
+   align-items: center;
+   gap: 0.6rem;
+   font-size: 1.1rem;
+   color: #94a3b8;
+}
+.timeline-point__bar {
+   width: 12px;
+   border-radius: 999px;
+   background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+   transition: height 0.3s ease;
+}
+.student-analytics__section--split {
+   display: grid;
+   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+   gap: 2rem;
+}
+.student-analytics__list {
+   list-style: none;
+   margin: 1rem 0 0;
+   padding: 0;
+   display: flex;
+   flex-direction: column;
+   gap: 1rem;
+}
+.student-analytics__list li {
+   display: flex;
+   justify-content: space-between;
+   gap: 1.2rem;
+   border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+   padding-bottom: 0.8rem;
+}
+.student-analytics__list li .value {
+   font-weight: 600;
+   color: #38bdf8;
+}
+.student-analytics .muted {
+   color: #94a3b8;
+   margin: 0;
+}
+@media (max-width: 768px) {
+   .student-analytics__hero {
+      flex-direction: column;
+   }
+   .student-analytics__profile {
+      width: 100%;
+   }
+}
 .quick-select .box-container{
    display: grid;
    grid-template-columns: repeat(auto-fit, minmax(27.5rem, 1fr));
@@ -2049,13 +2301,150 @@ body.dark .form-card {
 }
 
 body:not(.dark) .form-card--hero::before {
-  background: radial-gradient(circle at 20% 20%, rgba(16, 185, 129, 0.18), transparent 55%),
-    radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.25), transparent 45%),
-    #f6fbf7;
+   background: radial-gradient(circle at 20% 20%, rgba(16, 185, 129, 0.18), transparent 55%),
+     radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.25), transparent 45%),
+     #f6fbf7;
+}
+
+.upload-card {
+   position: relative;
+   border-radius: 2rem;
+   padding: clamp(2.6rem, 4vw, 3.4rem);
+   background: transparent;
+   overflow: hidden;
+}
+
+.upload-card::before {
+   content: '';
+   position: absolute;
+   inset: -2px;
+   border-radius: inherit;
+   background: linear-gradient(135deg, rgba(20, 184, 166, 0.9), rgba(14, 165, 233, 0.85), rgba(67, 56, 202, 0.8));
+   z-index: 0;
+}
+
+.upload-card::after {
+   content: '';
+   position: absolute;
+   inset: 2px;
+   border-radius: calc(2rem - 2px);
+   background: var(--form-card-bg-dark);
+   z-index: 1;
+   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 25px 60px rgba(5, 7, 15, 0.6);
+}
+
+.upload-card > * {
+   position: relative;
+   z-index: 2;
+}
+
+.upload-card,
+.upload-card p,
+.upload-card label,
+.upload-card .form-card__title,
+.upload-card .form-card__subtitle,
+.upload-card .form-note,
+.upload-card .upload-card__intro,
+.upload-card .required-indicator,
+.upload-card span {
+   color: #f8fafc;
+}
+
+.upload-card input[type="text"],
+.upload-card input[type="email"],
+.upload-card input[type="password"],
+.upload-card input[type="number"],
+.upload-card input[type="file"],
+.upload-card input[type="url"],
+.upload-card input[type="tel"],
+.upload-card textarea,
+.upload-card select {
+   background: rgba(255, 255, 255, 0.06) !important;
+   border-color: rgba(248, 250, 252, 0.35) !important;
+   color: #f8fafc;
+}
+
+.upload-card input::placeholder,
+.upload-card textarea::placeholder,
+.upload-card select::placeholder {
+   color: rgba(248, 250, 252, 0.65);
+}
+
+.upload-card select option {
+   color: #0f172a;
+   background: #f8fafc;
+}
+
+.create-course-card {
+   position: relative;
+   border-radius: 2rem;
+   padding: clamp(2.6rem, 4vw, 3.4rem);
+   background: transparent;
+   overflow: hidden;
+}
+
+.create-course-card::before {
+   content: '';
+   position: absolute;
+   inset: -2px;
+   border-radius: inherit;
+   background: linear-gradient(135deg, rgba(20, 184, 166, 0.9), rgba(14, 165, 233, 0.85), rgba(67, 56, 202, 0.8));
+   z-index: 0;
+}
+
+.create-course-card::after {
+   content: '';
+   position: absolute;
+   inset: 2px;
+   border-radius: calc(2rem - 2px);
+   background: var(--form-card-bg-dark);
+   z-index: 1;
+   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 25px 60px rgba(5, 7, 15, 0.6);
+}
+
+.create-course-card > * {
+   position: relative;
+   z-index: 2;
+}
+
+.create-course-card,
+.create-course-card p,
+.create-course-card label,
+.create-course-card .form-card__title,
+.create-course-card .form-card__subtitle,
+.create-course-card .form-note,
+.create-course-card .required-indicator,
+.create-course-card span {
+   color: #f8fafc;
+}
+
+.create-course-card input[type="text"],
+.create-course-card input[type="email"],
+.create-course-card input[type="password"],
+.create-course-card input[type="number"],
+.create-course-card input[type="file"],
+.create-course-card input[type="url"],
+.create-course-card input[type="tel"],
+.create-course-card textarea,
+.create-course-card select {
+   background: rgba(255, 255, 255, 0.06) !important;
+   border-color: rgba(248, 250, 252, 0.35) !important;
+   color: #f8fafc;
+}
+
+.create-course-card input::placeholder,
+.create-course-card textarea::placeholder,
+.create-course-card select::placeholder {
+   color: rgba(248, 250, 252, 0.65);
+}
+
+.create-course-card select option {
+   color: #0f172a;
+   background: #f8fafc;
 }
 
 .form-card--light {
-  --form-card-bg: var(--white);
+   --form-card-bg: var(--white);
   --form-card-heading: var(--black);
   --form-card-text: #475569;
   --form-field-bg: var(--light-bg);

@@ -29,6 +29,7 @@ const UploadMaterial = React.lazy(() => import('./UploadMaterial'));
 const StudentCourses = React.lazy(() => import('./StudentCourses'));
 const MaterialViewer = React.lazy(() => import('./MaterialViewer'));
 const AdminCourseAnalytics = React.lazy(() => import('./AdminCourseAnalytics'));
+const StudentAnalytics = React.lazy(() => import('./StudentAnalytics'));
 const AdminTeacherDetail = React.lazy(() => import('./AdminTeacherDetail'));
 const AdminTeacherLogs = React.lazy(() => import('./AdminTeacherLogs'));
 const AdminStudentDetail = React.lazy(() => import('./AdminStudentDetail'));
@@ -88,6 +89,14 @@ function App() {
             )}
           />
           <Route
+            path="/teacher/courses/:courseId/metrics"
+            element={guard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <AdminCourseAnalytics />
+              </Suspense>
+            )}
+          />
+          <Route
             path="/teacher/courses"
             element={guard(
               <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
@@ -100,6 +109,14 @@ function App() {
             element={guard(
               <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
                 <UploadMaterial />
+              </Suspense>
+            )}
+          />
+          <Route
+            path="/student/analytics"
+            element={studentGuard(
+              <Suspense fallback={<div className="flex justify-center py-10"><span>Loading...</span></div>}>
+                <StudentAnalytics />
               </Suspense>
             )}
           />

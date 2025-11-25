@@ -3,22 +3,24 @@ const express = require('express');
 const router = express.Router(); // <--- CORRECT: Router initialized first
 
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const models = require('./models');
+const mongoose = require('mongoose');
 const { awardLoginXp, getBadgeDefinitions, getStudentBadges, dailyGoalSnapshot, streakSnapshot } = require('./gamification');
 const passport = require('passport');
 const GitHubStrategy = require('passport-github2').Strategy;
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const axios = require('axios'); // <-- ADDED: For calling Python API
+const { sendWelcomeEmail, sendPasswordResetEmail, isEmailConfigured } = require('./emailService');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'apex101_secret';
 const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 const isAdminRequest = (req) => req?.user?.userType === 'Admin';
 const ensureAdmin = (req, res) => {
@@ -797,19 +799,18 @@ router.post('/forgot-password', async (req, res) => {
         const resetLink = `http://localhost:3000/new-password/${token}`;
         console.log(`Reset link for ${user.email}: ${resetLink}`);
 
-        if (process.env.EMAIL_USER) {
-            const transporter = nodemailer.createTransport({
-                host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-                port: process.env.EMAIL_PORT || 587,
-                secure: false,
-                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-            });
-            await transporter.sendMail({
-                from: process.env.EMAIL_USER,
-                to: user.email,
-                subject: 'ApexLearn Password Reset',
-                html: `<p>Click <a href="${resetLink}">here</a> to reset your password. This link expires in 1 hour.</p>`
-            });
+        if (isEmailConfigured()) {
+            try {
+                await sendPasswordResetEmail({
+                    name: user.name || user.email,
+                    email: user.email,
+                    resetLink
+                });
+            } catch (mailErr) {
+                console.error('Failed to send password reset email:', mailErr);
+            }
+        } else {
+            console.warn('Email is not configured; reset link logged only.');
         }
 
         res.json({ message: 'Reset link sent to your email' });
@@ -1030,6 +1031,10 @@ router.post('/register', upload.single('image'), async (req, res) => {
             const teacher = new models.Teacher({ name, email: email.toLowerCase(), password: hash, image });
             await teacher.save();
             console.log('Teacher registered:', email);
+            if (isEmailConfigured()) {
+                sendWelcomeEmail({ name, email: teacher.email })
+                    .catch((mailErr) => console.error('Welcome email failed (teacher):', mailErr));
+            }
             return res.status(201).json({ message: 'User registered' });
         }
 
@@ -1048,6 +1053,10 @@ router.post('/register', upload.single('image'), async (req, res) => {
             const student = new models.Student({ name, email: email.toLowerCase(), password: hash, image });
             await student.save();
             console.log('Student registered:', email);
+            if (isEmailConfigured()) {
+                sendWelcomeEmail({ name, email: student.email })
+                    .catch((mailErr) => console.error('Welcome email failed (student):', mailErr));
+            }
             return res.status(201).json({ message: 'User registered' });
         }
     } catch (err) {
@@ -1484,6 +1493,199 @@ router.post('/set-style', auth, async (req, res) => {
         res.status(500).json({ error: 'Server error while setting style' });
     }
 });
+
+router.post('/presence/ping', auth, async (req, res) => {
+    try {
+        const { userType, id } = req.user;
+        let Model;
+        if (userType === 'Student') Model = models.Student;
+        else if (userType === 'Teacher') Model = models.Teacher;
+        else if (userType === 'Admin') Model = models.Admin;
+        else return res.status(400).json({ error: 'Unsupported user type' });
+
+        await Model.updateOne({ _id: id }, { $set: { lastActiveAt: new Date() } });
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('Presence ping error:', err);
+        res.status(500).json({ error: 'Failed to record presence' });
+    }
+});
+
+router.get('/students/me/analytics', auth, async (req, res) => {
+    try {
+        if (req.user.userType !== 'Student') {
+            return res.status(403).json({ error: 'Students only' });
+        }
+
+        const student = await models.Student.findById(req.user.id).lean();
+        if (!student) {
+            return res.status(404).json({ error: 'Student not found' });
+        }
+        const studentKey = (student._id || req.user.id).toString();
+        const windowStart = new Date(Date.now() - 14 * DAY_IN_MS);
+
+        const [summaryAgg] = await models.Interaction.aggregate([
+            { $match: { user_id: studentKey } },
+            {
+                $group: {
+                    _id: null,
+                    totalTime: { $sum: '$timeSpentSeconds' },
+                    totalSessions: { $sum: 1 },
+                    completedSessions: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
+                    lastInteractionAt: { $max: '$timestamp' }
+                }
+            }
+        ]);
+
+        const formatBreakdownRaw = await models.Interaction.aggregate([
+            { $match: { user_id: studentKey } },
+            {
+                $group: {
+                    _id: '$annotations.format',
+                    timeSpentSeconds: { $sum: '$timeSpentSeconds' },
+                    sessions: { $sum: 1 }
+                }
+            },
+            {
+                $project: {
+                    _id: 0,
+                    label: { $ifNull: ['$_id', 'Unspecified'] },
+                    timeSpentSeconds: 1,
+                    sessions: 1
+                }
+            }
+        ]);
+
+        const timelineRaw = await models.Interaction.aggregate([
+            { $match: { user_id: studentKey, timestamp: { $gte: windowStart } } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } },
+                    timeSpentSeconds: { $sum: '$timeSpentSeconds' }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
+
+        const topMaterialsAgg = await models.Interaction.aggregate([
+            { $match: { user_id: studentKey } },
+            {
+                $group: {
+                    _id: '$content_id',
+                    timeSpentSeconds: { $sum: '$timeSpentSeconds' },
+                    lastViewedAt: { $max: '$timestamp' },
+                    format: { $first: '$annotations.format' },
+                    category: { $first: '$annotations.category' }
+                }
+            },
+            { $sort: { timeSpentSeconds: -1 } },
+            { $limit: 5 }
+        ]);
+
+        const recentSessionsRaw = await models.Interaction.find({ user_id: studentKey })
+            .sort({ timestamp: -1 })
+            .limit(6)
+            .select('content_id annotations timeSpentSeconds completed timestamp')
+            .lean();
+
+        const materialIds = new Set([
+            ...topMaterialsAgg.map((item) => item._id).filter(Boolean),
+            ...recentSessionsRaw.map((item) => item.content_id).filter(Boolean)
+        ]);
+
+        let materialDocs = [];
+        if (materialIds.size) {
+            const idsArray = Array.from(materialIds);
+            const objectIds = idsArray.filter((value) => mongoose.Types.ObjectId.isValid(value));
+            const orQuery = [{ id: { $in: idsArray } }];
+            if (objectIds.length) {
+                orQuery.push({ _id: { $in: objectIds } });
+            }
+            materialDocs = await models.Content.find({ $or: orQuery })
+                .select('id _id title annotations')
+                .lean();
+        }
+        const materialMap = new Map(
+            materialDocs.map((doc) => [doc.id || doc._id?.toString(), doc])
+        );
+
+        const topMaterials = topMaterialsAgg.map((item) => {
+            const content = materialMap.get(item._id) || {};
+            return {
+                contentId: item._id,
+                title: content.title || 'Lesson',
+                format: item.format || content.annotations?.format || 'Unspecified',
+                category: item.category || content.annotations?.category || 'Lesson',
+                timeSpentSeconds: item.timeSpentSeconds,
+                lastViewedAt: item.lastViewedAt
+            };
+        });
+
+        const recentSessions = recentSessionsRaw.map((session) => {
+            const content = materialMap.get(session.content_id) || {};
+            return {
+                id: session._id?.toString(),
+                contentId: session.content_id,
+                title: content.title || 'Lesson',
+                format: session.annotations?.format || content.annotations?.format || 'Unspecified',
+                category: session.annotations?.category || content.annotations?.category || 'Lesson',
+                timeSpentSeconds: session.timeSpentSeconds,
+                completed: session.completed,
+                timestamp: session.timestamp
+            };
+        });
+
+        const summary = {
+            totalTimeSpentSeconds: summaryAgg?.totalTime || 0,
+            totalSessions: summaryAgg?.totalSessions || 0,
+            avgSessionSeconds: summaryAgg?.totalSessions ? (summaryAgg.totalTime / summaryAgg.totalSessions) : 0,
+            completionRate: summaryAgg?.totalSessions ? summaryAgg.completedSessions / summaryAgg.totalSessions : 0,
+            lastInteractionAt: summaryAgg?.lastInteractionAt || student.updatedAt || student.createdAt,
+            coursesEnrolled: Array.isArray(student.enrolledCourses) ? student.enrolledCourses.length : 0
+        };
+
+        res.json({
+            profile: {
+                name: student.name,
+                xp: student.xp || 0,
+                badges: Array.isArray(student.badges) ? student.badges.length : 0,
+                streaks: {
+                    login: student.streaks?.login?.count || student.loginStreak?.count || 0,
+                    lesson: student.streaks?.lesson?.count || student.lessonStreak?.count || 0
+                },
+                dailyGoal: student.dailyGoal || {},
+                learningProfile: student.learningProfile || null
+            },
+            summary,
+            formatBreakdown: formatBreakdownRaw,
+            timeline: timelineRaw,
+            topMaterials,
+            recentSessions
+        });
+    } catch (err) {
+        console.error('Student analytics error:', err);
+        res.status(500).json({ error: 'Failed to load analytics' });
+    }
+});
+
+if (process.env.NODE_ENV !== 'production') {
+    router.post('/test-welcome-email', async (req, res) => {
+        try {
+            const { name = 'Test User', email } = req.body || {};
+            if (!email) {
+                return res.status(400).json({ error: 'Email is required' });
+            }
+            if (!isEmailConfigured()) {
+                return res.status(503).json({ error: 'Email transport not configured' });
+            }
+            await sendWelcomeEmail({ name, email });
+            res.json({ message: 'Welcome email sent' });
+        } catch (err) {
+            console.error('Test welcome email error:', err);
+            res.status(500).json({ error: 'Failed to send email' });
+        }
+    });
+}
 
 /**
  * ROUTE 4: Store explicit learning-profile data from the AI tutor

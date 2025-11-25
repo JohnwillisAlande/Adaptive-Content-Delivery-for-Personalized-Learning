@@ -1,0 +1,66 @@
+  const trackInteraction = useCallback(
+    async (overrideCompleted) => {
+      if (hasTrackedRef.current) return;
+      if (!user || user.userType !== 'Student') return;
+      pauseEngagement();
+      const elapsed = getEngagementSeconds();
+      if (elapsed <= 0) return;
+      hasTrackedRef.current = true;
+      try {
+        const { data } = await api.post(/courses//materials//interaction, {
+          timeSpentSeconds: Math.max(0, elapsed),
+          completed: overrideCompleted ?? completedRef.current
+        });
+        const contentObject = buildContentObject();
+        if (contentObject) {
+          api.post('/track', {
+            timeSpentSeconds: Math.max(0, elapsed),
+            contentObject
+          }).catch((trackErr) => {
+            console.warn('Failed to persist ML tracking data', trackErr);
+          });
+        }
+        let refreshed = false;
+        if (data?.xpAwarded) {
+          const totalXpLabel = data.totalXp ?  (total  XP) : '';
+          toast.success(+ XP earned!);
+          if (typeof refresh === 'function') {
+            await refresh();
+            refreshed = true;
+          }
+        }
+        if (typeof data?.streaks?.lesson?.count === 'number') {
+          if (data.streaks.lesson.count > lessonStreakRef.current) {
+            toast.success(?? Lesson streak is now  day!);
+          }
+          lessonStreakRef.current = data.streaks.lesson.count;
+        }
+        if (typeof data?.dailyGoal?.lessonsCompletedToday === 'number') {
+          const previous = lessonGoalProgressRef.current;
+          const current = data.dailyGoal.lessonsCompletedToday;
+          if (
+            current > previous &&
+            data.dailyGoal.lessonGoalMet &&
+            current >= (data.dailyGoal.lessonsTarget ?? 1)
+          ) {
+            toast.success('? Daily lesson goal complete!');
+          }
+          lessonGoalProgressRef.current = current;
+        }
+        if (Array.isArray(data?.badgesAwarded) && data.badgesAwarded.length) {
+          data.badgesAwarded.forEach((badge) => {
+            toast.success(Badge unlocked: );
+          });
+          if (!refreshed && typeof refresh === 'function') {
+            await refresh();
+            refreshed = true;
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to record interaction', err);
+      } finally {
+        resetEngagement();
+      }
+    },
+    [courseId, materialId, user, refresh, pauseEngagement, getEngagementSeconds, buildContentObject, resetEngagement]
+  );

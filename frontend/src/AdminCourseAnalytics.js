@@ -21,14 +21,22 @@ function AdminCourseAnalytics() {
   const { courseId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const isAdmin = user?.userType === 'Admin';
+  const isTeacher = user?.userType === 'Teacher';
   const [loading, setLoading] = useState(true);
   const [payload, setPayload] = useState(null);
   const [expandedMaterialId, setExpandedMaterialId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const metricsEndpoint = useMemo(() => {
+    if (isAdmin) return `/courses/admin/${courseId}/metrics`;
+    if (isTeacher) return `/courses/teacher/${courseId}/metrics`;
+    return null;
+  }, [isAdmin, isTeacher, courseId]);
+  const backPath = isAdmin ? '/courses' : '/teacher/courses';
 
   useEffect(() => {
-    if (user?.userType !== 'Admin') {
-      toast.error('Administrators only');
+    if (!metricsEndpoint) {
+      toast.error('You are not authorized to view course metrics');
       navigate('/courses', { replace: true });
       return;
     }
@@ -40,7 +48,7 @@ function AdminCourseAnalytics() {
         setRefreshing(true);
       }
       try {
-        const { data } = await api.get(`/courses/admin/${courseId}/metrics`);
+        const { data } = await api.get(metricsEndpoint);
         if (!active) return;
         setPayload(data);
       } catch (err) {
@@ -61,7 +69,7 @@ function AdminCourseAnalytics() {
       active = false;
       clearInterval(intervalId);
     };
-  }, [courseId, navigate, user?.userType]);
+  }, [courseId, navigate, metricsEndpoint]);
 
   const creationDate = useMemo(() => {
     if (!payload?.course?.createdAt) return '—';
@@ -103,7 +111,7 @@ function AdminCourseAnalytics() {
       <div className="admin-course-analytics">
         <div className="admin-course-analytics__empty">
           <p>Unable to load course analytics.</p>
-          <button type="button" className="inline-btn" onClick={() => navigate('/courses')}>
+          <button type="button" className="inline-btn" onClick={() => navigate(backPath)}>
             Back to Courses
           </button>
         </div>
@@ -138,7 +146,11 @@ function AdminCourseAnalytics() {
 
   return (
     <div className="admin-course-analytics">
-      <button type="button" className="option-btn admin-course-analytics__back" onClick={() => navigate('/courses')}>
+      <button
+        type="button"
+        className="option-btn admin-course-analytics__back"
+        onClick={() => navigate(backPath)}
+      >
         <FaArrowLeft /> Back to Courses
       </button>
       {refreshing && <span className="admin-course-analytics__refresh-indicator">Updating metrics…</span>}

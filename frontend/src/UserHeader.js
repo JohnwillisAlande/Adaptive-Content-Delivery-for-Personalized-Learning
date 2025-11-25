@@ -56,7 +56,8 @@ function UserHeader() {
     if (user?.userType === 'Student') {
       links.push(
         { to: '/student/courses', label: 'My Courses' },
-        { to: '/ai-tutor', label: 'ApexLearn ChatBot' }
+        { to: '/ai-tutor', label: 'ApexLearn ChatBot' },
+        { to: '/student/analytics', label: 'Analytics' }
       );
     }
     if (user?.userType === 'Teacher') {
@@ -93,6 +94,21 @@ function UserHeader() {
       localStorage.setItem('dark-mode', 'disabled');
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    let cancelled = false;
+    const ping = () => {
+      if (cancelled) return;
+      api.post('/presence/ping').catch(() => {});
+    };
+    ping();
+    const intervalId = setInterval(ping, 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [isAuthenticated]);
 
   const handlePredict = async () => {
     if (!isAuthenticated) {
@@ -228,6 +244,7 @@ function UserHeader() {
             <>
               <Link to="/student/courses"><i className="fas fa-layer-group"></i><span>My Courses</span></Link>
               <Link to="/ai-tutor"><i className="fas fa-robot"></i><span>ApexLearn ChatBot</span></Link>
+              <Link to="/student/analytics"><i className="fas fa-chart-line"></i><span>Analytics</span></Link>
             </>
           )}
           {user?.userType === 'Teacher' && (

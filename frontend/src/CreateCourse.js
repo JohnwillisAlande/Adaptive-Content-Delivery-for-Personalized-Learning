@@ -66,7 +66,11 @@ function CreateCourse() {
 
   return (
     <section className="form-screen form-screen--plain">
-      <form onSubmit={handleSubmit} className="form-card form-card--wide" aria-label="Create course form">
+      <form
+        onSubmit={handleSubmit}
+        className="form-card form-card--wide create-course-card"
+        aria-label="Create course form"
+      >
         <h2 className="form-card__title">Create a new course</h2>
         <p className="form-card__subtitle">
           Give your course a clear identity and an inviting description before you add learning materials.

@@ -12,6 +12,7 @@ import {
 } from 'react-icons/fa';
 import api from './api';
 import { useAuth } from './context/AuthContext';
+import { useMediaTracker } from './hooks/useMediaTracker';
 
 const FILE_BASE_URL = process.env.REACT_APP_FILE_BASE_URL || 'http://localhost:5000';
 
@@ -107,6 +108,21 @@ function MaterialViewer() {
 
 const flashcards = useMemo(() => buildFlashcards(material), [material]);
 const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [material]);
+
+  const resourceId = useMemo(
+    () => material?.id || material?._id?.toString() || material?.content_id || materialId,
+    [material?.id, material?._id, material?.content_id, materialId]
+  );
+  const resourceType = material?.annotations?.format || 'Visual';
+
+  const {
+    startTracking: startMediaTracking,
+    stopTracking: stopMediaTracking,
+    reportActivity: reportMediaActivity
+  } = useMediaTracker({
+    resourceId,
+    resourceType
+  });
 
   const buildContentObject = useCallback(() => {
     if (!material) return null;
@@ -296,6 +312,22 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
   }, [courseId, materialId, navigate, trackInteraction]);
 
   useEffect(() => {
+    if (!isStudent || !material || !resourceId) return undefined;
+    reportMediaActivity();
+    startMediaTracking();
+    return () => {
+      stopMediaTracking();
+    };
+  }, [
+    isStudent,
+    material,
+    resourceId,
+    reportMediaActivity,
+    startMediaTracking,
+    stopMediaTracking
+  ]);
+
+  useEffect(() => {
     if (!isStudent) return;
     if (typeof window === 'undefined') return;
     notesHydratedRef.current = false;
@@ -339,12 +371,30 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
     }
   };
 
+  const handleMediaPlay = () => {
+    if (!isStudent) return;
+    reportMediaActivity();
+    startMediaTracking();
+  };
+
+  const handleMediaPause = () => {
+    if (!isStudent) return;
+    stopMediaTracking();
+  };
+
+  const handleMediaEnded = () => {
+    if (!isStudent) return;
+    stopMediaTracking();
+  };
+
   const handleToggleNotepad = () => {
     setShowNotepad(prev => !prev);
+    if (isStudent) reportMediaActivity();
   };
 
   const handleNotesChange = (event) => {
     setNotes(event.target.value);
+    if (isStudent) reportMediaActivity();
   };
 
   const handleClearNotes = () => {
@@ -356,6 +406,7 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
         console.warn('Failed to clear notepad notes', err);
       }
     }
+    if (isStudent) reportMediaActivity();
   };
 
   const handleQuizAnswerChange = (questionIndex, optionIndex) => {
@@ -364,6 +415,7 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
       next[questionIndex] = optionIndex;
       return next;
     });
+    if (isStudent) reportMediaActivity();
   };
 
   const handleQuizSubmit = (event) => {
@@ -382,6 +434,7 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
       timerRef.current = Date.now();
       hasTrackedRef.current = false;
     }
+    if (isStudent) reportMediaActivity();
   };
 
   const category = material?.annotations?.category || 'Material';
@@ -398,7 +451,10 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
       case 'Example':
         if (youtubeEmbed) {
           return (
-            <div className="material-media material-media--video">
+            <div
+              className="material-media material-media--video"
+              onMouseMove={isStudent ? reportMediaActivity : undefined}
+            >
               <iframe
                 title={material.title}
                 src={`${youtubeEmbed}?rel=0`}
@@ -417,6 +473,9 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
               className="material-media__player"
               src={videoUrl}
               poster={resolveAssetUrl(material.thumb)}
+              onPlay={handleMediaPlay}
+              onPause={handleMediaPause}
+              onEnded={handleMediaEnded}
             />
           </div>
         );
@@ -424,13 +483,24 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
         return (
           <div className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg flex flex-col items-center gap-4">
             <FaHeadphones className="text-4xl text-teal-400" />
-            <audio controls src={fileUrl || videoUrl} className="w-full" />
+            <audio
+              controls
+              src={fileUrl || videoUrl}
+              className="w-full"
+              onPlay={handleMediaPlay}
+              onPause={handleMediaPause}
+              onEnded={handleMediaEnded}
+            />
           </div>
         );
       case 'PDF':
       case 'Reading':
         return fileUrl ? (
-          <div className="teacher-preview__pdf-wrapper">
+          <div
+            className="teacher-preview__pdf-wrapper"
+            onMouseMove={isStudent ? reportMediaActivity : undefined}
+            onScroll={isStudent ? reportMediaActivity : undefined}
+          >
             <iframe
               src={`${fileUrl}#toolbar=0`}
               title={material.title}
@@ -449,7 +519,11 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
             </button>
           </div>
         ) : (
-          <div className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg">
+          <div
+            className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg"
+            onMouseMove={isStudent ? reportMediaActivity : undefined}
+            onScroll={isStudent ? reportMediaActivity : undefined}
+          >
             <p className="text-slate-300 whitespace-pre-line">{textContent}</p>
           </div>
         );
@@ -462,11 +536,16 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
               src={fileUrl}
               alt={material.title}
               className="w-full rounded-2xl shadow-lg object-contain bg-[#0f1117]"
+              onMouseMove={isStudent ? reportMediaActivity : undefined}
             />
           );
         }
         return (
-          <div className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg">
+          <div
+            className="bg-[#1a1d2e] p-6 rounded-2xl shadow-lg"
+            onMouseMove={isStudent ? reportMediaActivity : undefined}
+            onScroll={isStudent ? reportMediaActivity : undefined}
+          >
             <p className="text-slate-300 whitespace-pre-line">{textContent}</p>
           </div>
         );
@@ -480,7 +559,10 @@ const youtubeEmbed = useMemo(() => extractYouTubeEmbed(material?.videoUrl), [mat
         }
         const card = flashcards[flashcardIndex];
         return (
-          <div className="bg-[#1a1d2e] p-8 rounded-2xl shadow-lg flex flex-col items-center gap-6">
+          <div
+            className="bg-[#1a1d2e] p-8 rounded-2xl shadow-lg flex flex-col items-center gap-6"
+            onMouseMove={isStudent ? reportMediaActivity : undefined}
+          >
             <div className="w-full text-center">
               <p className="text-xs text-slate-400 mb-2">Card {flashcardIndex + 1} of {flashcards.length}</p>
               <div className="bg-[#0f1117] rounded-xl p-6 text-white text-lg font-semibold shadow-inner">
