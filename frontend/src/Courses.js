@@ -106,10 +106,11 @@ const COURSE_LIST = [
 
 const resolveThumb = (course) => {
   if (!course) return DEFAULT_THUMBNAIL;
-  if (course.thumbnail) return course.thumbnail;
-  if (course.thumb) return course.thumb;
-  if (course.backgroundImage) return course.backgroundImage;
-  return DEFAULT_THUMBNAIL;
+  const candidate = course.thumbnail || course.thumb || course.backgroundImage || course.thumbUrl;
+  if (!candidate) return DEFAULT_THUMBNAIL;
+  if (candidate.startsWith('http')) return candidate;
+  if (candidate.startsWith('/')) return `${FILE_BASE_URL}${candidate}`;
+  return `${FILE_BASE_URL}/uploaded_files/${candidate}`;
 };
 
 function Courses() {

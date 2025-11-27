@@ -46,6 +46,7 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
 app.use('/uploaded_files', express.static(path.join(__dirname, '../uploaded_files')));
 app.use('/api/courses', require('./courses'));
 app.use('/api', require('./auth'));
+app.use('/api/analytics', require('./analytics'));
 
 app.get('/', (req, res) => {
   res.send('Apex101 MERN backend running');

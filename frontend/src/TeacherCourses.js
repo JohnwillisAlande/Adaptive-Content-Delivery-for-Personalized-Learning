@@ -46,7 +46,8 @@ const TeacherCourseCard = ({
   onUploadMaterial,
   onEditCourse,
   onViewMaterial,
-  onEditMaterial
+  onEditMaterial,
+  onViewMetrics = () => {}
 }) => {
   const id = course.id || course._id;
   const title = course.title || course.name || 'Untitled course';
@@ -66,6 +67,11 @@ const TeacherCourseCard = ({
   const handleEditCourse = (event) => {
     event.stopPropagation();
     onEditCourse(course);
+  };
+
+  const handleViewMetrics = (event) => {
+    event.stopPropagation();
+    onViewMetrics(course);
   };
 
   return (
@@ -124,6 +130,13 @@ const TeacherCourseCard = ({
           onClick={handleEditCourse}
         >
           Edit details
+        </button>
+        <button
+          type="button"
+          className="inline-option-btn"
+          onClick={handleViewMetrics}
+        >
+          View course metrics
         </button>
       </div>
 
@@ -356,6 +369,12 @@ function TeacherCourses() {
       ? `courseId=${course._id}&materialId=${material._id}`
       : `courseId=${course._id}`;
     navigate(`/teacher/materials?${query}`);
+  };
+
+  const navigateToMetrics = (course) => {
+    const courseId = course?._id || course?.id;
+    if (!courseId) return;
+    navigate(`/teacher/courses/${courseId}/metrics`);
   };
 
   const closePreview = () => {
@@ -676,6 +695,7 @@ function TeacherCourses() {
                   onEditMaterial={(selectedCourse, material) =>
                     navigate(`/teacher/materials?courseId=${selectedCourse._id}&materialId=${material._id}`)
                   }
+                  onViewMetrics={navigateToMetrics}
                 />
               ))}
             </div>

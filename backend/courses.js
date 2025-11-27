@@ -62,10 +62,26 @@ const toBoolean = (value, fallback = false) => {
   return fallback;
 };
 
+const extractTokenFromRequest = (req) => {
+  if (req.headers.authorization) {
+    const parts = req.headers.authorization.split(' ');
+    if (parts.length === 2) {
+      return parts[1];
+    }
+  }
+  if (req.body?.token) {
+    return req.body.token;
+  }
+  if (req.query?.token) {
+    return req.query.token;
+  }
+  return null;
+};
+
 const getRequestContext = async (req) => {
-  if (!req.headers.authorization) return {};
+  const token = extractTokenFromRequest(req);
+  if (!token) return {};
   try {
-    const token = req.headers.authorization.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await findUserById(decoded.id);
     return { decoded, user };
@@ -1666,159 +1682,45 @@ router.get('/admin/:courseId/metrics', async (req, res) => {
       courseLookup.push({ _id: courseId });
     }
 
-    let storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
     if (!storedCourse) {
       return res.status(404).json({ error: 'Course not found' });
     }
 
-    storedCourse = await hydrateSingleCourseCreator(storedCourse);
-    const summary = buildCourseSummary(courseId, storedCourse);
-    const playlistKeys = resolveCoursePlaylistKeys(storedCourse, courseId);
-    if (!playlistKeys.length) {
-      playlistKeys.push(courseId);
-    }
-    const normalizedKeys = playlistKeys.map((value) => value.toString());
-    const materialMatch = { playlist_id: { $in: normalizedKeys } };
-
-    const [
-      materialsList,
-      totalMaterials,
-      materialBreakdown,
-      formatBreakdown,
-      interactionStats,
-      recentInteractions,
-      totalEnrollments,
-      materialInteractionStats
-    ] = await Promise.all([
-      Content.find({ playlist_id: { $in: normalizedKeys } })
-        .sort({ order: 1, createdAt: 1 })
-        .lean(),
-      Content.countDocuments(materialMatch),
-      Content.aggregate([
-        { $match: materialMatch },
-        { $group: { _id: '$annotations.category', count: { $sum: 1 } } }
-      ]),
-      Content.aggregate([
-        { $match: materialMatch },
-        { $group: { _id: '$annotations.format', count: { $sum: 1 } } }
-      ]),
-      Interaction.aggregate([
-        { $match: { playlist_id: { $in: normalizedKeys } } },
-        {
-          $group: {
-            _id: null,
-            totalVisits: { $sum: 1 },
-            totalTime: { $sum: '$timeSpentSeconds' },
-            completionCount: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
-            lastInteractionAt: { $max: '$timestamp' },
-            uniqueLearners: { $addToSet: '$user_id' }
-          }
-        },
-        {
-          $project: {
-            _id: 0,
-            totalVisits: 1,
-            totalTime: 1,
-            completionCount: 1,
-            lastInteractionAt: 1,
-            uniqueLearners: { $size: '$uniqueLearners' }
-          }
-        }
-      ]),
-      Interaction.find({ playlist_id: { $in: normalizedKeys } })
-        .sort({ timestamp: -1 })
-        .limit(8)
-        .select('user_id timeSpentSeconds completed timestamp annotations content_id')
-        .lean(),
-      Student.countDocuments({ enrolledCourses: summary.id }),
-      Interaction.aggregate([
-        { $match: { playlist_id: { $in: normalizedKeys } } },
-        {
-          $group: {
-            _id: '$content_id',
-            clicks: { $sum: 1 },
-            avgTimeSpentSeconds: { $avg: '$timeSpentSeconds' },
-            totalTimeSpentSeconds: { $sum: '$timeSpentSeconds' },
-            completions: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
-            lastViewedAt: { $max: '$timestamp' }
-          }
-        }
-      ])
-    ]);
-
-    const materialStatsMap = new Map(
-      materialInteractionStats.map((entry) => [(entry._id || '').toString(), entry])
-    );
-
-    const visitStats = interactionStats[0] || {};
-    const totalVisits = visitStats.totalVisits || 0;
-    const totalTimeSpentSeconds = visitStats.totalTime || 0;
-    const completionCount = visitStats.completionCount || 0;
-    const averageTimePerVisit = totalVisits ? totalTimeSpentSeconds / totalVisits : 0;
-
-    const materialsPayload = materialsList.map((material) => {
-      const materialId = material.id || material._id?.toString();
-      const stats =
-        materialStatsMap.get(materialId) ||
-        materialStatsMap.get(material._id?.toString()) ||
-        {};
-      return {
-        id: materialId,
-        _id: material._id,
-        title: material.title,
-        order: material.order,
-        annotations: material.annotations || {},
-        uploadedAt: material.createdAt || material.updatedAt || null,
-        stats: {
-          clicks: stats.clicks || 0,
-          avgTimeSpentSeconds: stats.avgTimeSpentSeconds || 0,
-          totalTimeSpentSeconds: stats.totalTimeSpentSeconds || 0,
-          completions: stats.completions || 0,
-          lastViewedAt: stats.lastViewedAt || null
-        }
-      };
-    });
-
-    res.json({
-      course: {
-        id: summary.id,
-        title: summary.title,
-        description: summary.description,
-        teacherName: summary.teacherName || storedCourse.teacherName || '',
-        createdAt: storedCourse.createdAt,
-        suspended: Boolean(storedCourse.suspended)
-      },
-      metrics: {
-        totalMaterials,
-        materialBreakdown: materialBreakdown.map((item) => ({
-          label: item._id || 'Uncategorized',
-          count: item.count
-        })),
-        formatBreakdown: formatBreakdown.map((item) => ({
-          label: item._id || 'Unspecified',
-          count: item.count
-        })),
-        totalEnrollments,
-        totalVisits,
-        uniqueLearners: visitStats.uniqueLearners || 0,
-        totalTimeSpentSeconds,
-        averageTimePerVisit,
-        completionCount,
-        completionRate: totalVisits ? completionCount / totalVisits : 0,
-        lastInteractionAt: visitStats.lastInteractionAt || null,
-        recentInteractions: recentInteractions.map((entry) => ({
-          id: entry._id?.toString(),
-          userId: entry.user_id,
-          timeSpentSeconds: entry.timeSpentSeconds,
-          completed: entry.completed,
-          timestamp: entry.timestamp,
-          annotations: entry.annotations || {}
-        })),
-        materials: materialsPayload
-      }
-    });
+    const payload = await buildCourseMetricsPayload(storedCourse, courseId);
+    res.json(payload);
   } catch (err) {
     console.error('Admin course metrics error:', err);
+    res.status(500).json({ error: 'Failed to load course metrics' });
+  }
+});
+
+router.get('/teacher/:courseId/metrics', async (req, res) => {
+  const { courseId } = req.params;
+  try {
+    const { user } = await getRequestContext(req);
+    if (!user || user.constructor?.modelName !== 'Teacher') {
+      return res.status(403).json({ error: 'Teachers only' });
+    }
+
+    const courseLookup = [{ id: courseId }];
+    if (mongoose.Types.ObjectId.isValid(courseId)) {
+      courseLookup.push({ _id: courseId });
+    }
+
+    const storedCourse = await Course.findOne({ $or: courseLookup }).lean();
+    if (!storedCourse) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    if (storedCourse.teacherId?.toString() !== user._id.toString()) {
+      return res.status(403).json({ error: 'You do not have access to this course' });
+    }
+
+    const payload = await buildCourseMetricsPayload(storedCourse, courseId);
+    res.json(payload);
+  } catch (err) {
+    console.error('Teacher course metrics error:', err);
     res.status(500).json({ error: 'Failed to load course metrics' });
   }
 });
@@ -1951,7 +1853,12 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
     const timeSpentSeconds = Math.max(0, Number(req.body.timeSpentSeconds) || 0);
     const completed = req.body.completed === undefined ? true : Boolean(req.body.completed);
 
-    const interactionFilter = { user_id: user._id.toString(), content_id: material.id };
+    const contentId = material.id || (material._id ? material._id.toString() : null);
+    if (!contentId) {
+      return res.status(422).json({ error: 'Material is missing an identifier' });
+    }
+
+    const interactionFilter = { user_id: user._id.toString(), content_id: contentId };
     const existingInteraction = await Interaction.findOne(interactionFilter).lean();
 
     const annotations = {
@@ -1961,10 +1868,25 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
       order: material.order ?? 0
     };
 
+    const interactionPlaylistId =
+      material.playlist_id ||
+      (storedCourse?.playlistId ? storedCourse.playlistId.toString() : null) ||
+      (playlistKeys.length ? playlistKeys[0] : null) ||
+      courseId;
+
+    if (!interactionPlaylistId) {
+      console.error('Material interaction error: missing playlist reference', {
+        courseId,
+        materialId,
+        playlistKeys
+      });
+      return res.status(422).json({ error: 'Material is missing playlist reference' });
+    }
+
     const interactionPayload = {
       user_id: user._id.toString(),
-      content_id: material.id,
-      playlist_id: material.playlist_id,
+      content_id: contentId,
+      playlist_id: interactionPlaylistId,
       annotations,
       timeSpentSeconds,
       completed,
@@ -1974,8 +1896,35 @@ router.post('/:courseId/materials/:materialId/interaction', async (req, res) => 
     if (!existingInteraction) {
       await Interaction.create(interactionPayload);
     } else {
-      await Interaction.updateOne(interactionFilter, interactionPayload);
+      await Interaction.updateOne(
+        interactionFilter,
+        {
+          $inc: { timeSpentSeconds },
+          $set: {
+            completed: completed || existingInteraction.completed,
+            annotations,
+            timestamp: new Date()
+          }
+        }
+      );
     }
+
+    const formatKey = (annotations.format || 'Visual').toLowerCase();
+    const statsIncrement = {
+      'engagementStats.totalSeconds': timeSpentSeconds,
+      'engagementStats.sessions': 1
+    };
+    if (formatKey === 'visual') {
+      statsIncrement['engagementStats.visualSeconds'] = timeSpentSeconds;
+    } else if (formatKey === 'verbal') {
+      statsIncrement['engagementStats.verbalSeconds'] = timeSpentSeconds;
+    } else if (formatKey === 'audio') {
+      statsIncrement['engagementStats.audioSeconds'] = timeSpentSeconds;
+    }
+    await Student.updateOne(
+      { _id: user._id },
+      { $inc: statsIncrement, $set: { lastActiveAt: new Date() } }
+    );
 
     const {
       xpAwarded,
@@ -2372,3 +2321,153 @@ module.exports = router;
 
 
 
+const buildCourseMetricsPayload = async (storedCourse, courseId) => {
+  const hydratedCourse = await hydrateSingleCourseCreator(storedCourse);
+  const summary = buildCourseSummary(courseId, hydratedCourse);
+  const playlistKeys = resolveCoursePlaylistKeys(hydratedCourse, courseId);
+  if (!playlistKeys.length) {
+    playlistKeys.push(courseId);
+  }
+  const normalizedKeys = playlistKeys.map((value) => value.toString());
+  const materialMatch = { playlist_id: { $in: normalizedKeys } };
+
+  const [
+    materialsList,
+    totalMaterials,
+    materialBreakdown,
+    formatBreakdown,
+    interactionStats,
+    recentInteractions,
+    totalEnrollments,
+    materialInteractionStats
+  ] = await Promise.all([
+    Content.find({ playlist_id: { $in: normalizedKeys } })
+      .sort({ order: 1, createdAt: 1 })
+      .lean(),
+    Content.countDocuments(materialMatch),
+    Content.aggregate([
+      { $match: materialMatch },
+      { $group: { _id: '$annotations.category', count: { $sum: 1 } } }
+    ]),
+    Content.aggregate([
+      { $match: materialMatch },
+      { $group: { _id: '$annotations.format', count: { $sum: 1 } } }
+    ]),
+    Interaction.aggregate([
+      { $match: { playlist_id: { $in: normalizedKeys } } },
+      {
+        $group: {
+          _id: null,
+          totalVisits: { $sum: 1 },
+          totalTime: { $sum: '$timeSpentSeconds' },
+          completionCount: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
+          lastInteractionAt: { $max: '$timestamp' },
+          uniqueLearners: { $addToSet: '$user_id' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalVisits: 1,
+          totalTime: 1,
+          completionCount: 1,
+          lastInteractionAt: 1,
+          uniqueLearners: { $size: '$uniqueLearners' }
+        }
+      }
+    ]),
+    Interaction.find({ playlist_id: { $in: normalizedKeys } })
+      .sort({ timestamp: -1 })
+      .limit(8)
+      .select('user_id timeSpentSeconds completed timestamp annotations content_id')
+      .lean(),
+    Student.countDocuments({ enrolledCourses: summary.id }),
+    Interaction.aggregate([
+      { $match: { playlist_id: { $in: normalizedKeys } } },
+      {
+        $group: {
+          _id: '$content_id',
+          clicks: { $sum: 1 },
+          avgTimeSpentSeconds: { $avg: '$timeSpentSeconds' },
+          totalTimeSpentSeconds: { $sum: '$timeSpentSeconds' },
+          completions: { $sum: { $cond: [{ $eq: ['$completed', true] }, 1, 0] } },
+          lastViewedAt: { $max: '$timestamp' }
+        }
+      }
+    ])
+  ]);
+
+  const materialStatsMap = new Map(
+    materialInteractionStats.map((entry) => [(entry._id || '').toString(), entry])
+  );
+
+  const visitStats = interactionStats[0] || {};
+  const totalVisits = visitStats.totalVisits || 0;
+  const totalTimeSpentSeconds = visitStats.totalTime || 0;
+  const completionCount = visitStats.completionCount || 0;
+  const averageTimePerVisit = totalVisits ? totalTimeSpentSeconds / totalVisits : 0;
+
+  const materialsPayload = materialsList.map((material) => {
+    const materialId = material.id || material._id?.toString();
+    const stats =
+      materialStatsMap.get(materialId) ||
+      materialStatsMap.get(material._id?.toString()) ||
+      {};
+    return {
+      id: materialId,
+      _id: material._id,
+      title: material.title,
+      order: material.order,
+      annotations: material.annotations || {},
+      uploadedAt: material.createdAt || material.updatedAt || null,
+      stats: {
+        clicks: stats.clicks || 0,
+        avgTimeSpentSeconds: stats.avgTimeSpentSeconds || 0,
+        totalTimeSpentSeconds: stats.totalTimeSpentSeconds || 0,
+        completions: stats.completions || 0,
+        lastViewedAt: stats.lastViewedAt || null
+      }
+    };
+  });
+
+  const visitPayload = {
+    totalMaterials,
+    materialBreakdown: materialBreakdown.map((item) => ({
+      label: item._id || 'Uncategorized',
+      count: item.count
+    })),
+    formatBreakdown: formatBreakdown.map((item) => ({
+      label: item._id || 'Unspecified',
+      count: item.count
+    })),
+    totalEnrollments,
+    totalVisits,
+    uniqueLearners: visitStats.uniqueLearners || 0,
+    totalTimeSpentSeconds,
+    averageTimePerVisit,
+    completionCount,
+    completionRate: totalVisits ? completionCount / totalVisits : 0,
+    lastInteractionAt: visitStats.lastInteractionAt || null,
+    recentInteractions: recentInteractions.map((entry) => ({
+      id: entry._id?.toString(),
+      userId: entry.user_id,
+      timeSpentSeconds: entry.timeSpentSeconds,
+      completed: entry.completed,
+      timestamp: entry.timestamp,
+      annotations: entry.annotations || {}
+    })),
+    materials: materialsPayload
+  };
+
+  return {
+    course: {
+      id: summary.id,
+      title: summary.title,
+      description: summary.description,
+      teacherName: summary.teacherName || hydratedCourse.teacherName || '',
+      createdAt: hydratedCourse.createdAt,
+      suspended: Boolean(hydratedCourse.suspended)
+    },
+    metrics: visitPayload
+  };
+};

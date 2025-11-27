@@ -161,6 +161,7 @@ const StudentSchema = new mongoose.Schema({
   email: { type: String, required: true, lowercase: true },
   password: { type: String, required: true },
   image: { type: String },
+  lastActiveAt: { type: Date, default: Date.now },
   xp: { type: Number, default: 0 },
   lastLoginXpAt: { type: Date, default: null },
   loginStreak: {
@@ -185,6 +186,14 @@ const StudentSchema = new mongoose.Schema({
   isGoogleAuth: { type: Boolean, default: false },
   githubId: { type: String },
   isGithubAuth: { type: Boolean, default: false },
+  lastActiveAt: { type: Date, default: Date.now },
+  engagementStats: {
+    visualSeconds: { type: Number, default: 0 },
+    verbalSeconds: { type: Number, default: 0 },
+    audioSeconds: { type: Number, default: 0 },
+    totalSeconds: { type: Number, default: 0 },
+    sessions: { type: Number, default: 0 }
+  },
   ...passwordResetFields,
 
   // --- ADDED: Learning Style Profile ---
@@ -213,6 +222,7 @@ const TeacherSchema = new mongoose.Schema({
   email: { type: String, required: true, lowercase: true },
   password: { type: String, required: true },
   image: { type: String },
+  lastActiveAt: { type: Date, default: Date.now },
   coursesTaught: [{ type: String }], // Array of course IDs
   googleId: { type: String },
   isGoogleAuth: { type: Boolean, default: false },
@@ -235,6 +245,7 @@ const AdminSchema = new mongoose.Schema({
   email: { type: String, required: true, lowercase: true },
   password: { type: String, required: true },
   image: { type: String },
+  lastActiveAt: { type: Date, default: Date.now },
   ...passwordResetFields,
 
   learningStyle: {
@@ -266,16 +277,27 @@ const InteractionSchema = new mongoose.Schema({
   playlist_id: { type: String, required: true }, // The 'id' from PlaylistSchema
 
   annotations: {
-    format: String,
-    type: String,
-    category: String,
-    order: Number
+    format: { type: String, default: '' },
+    type: { type: String, default: '' },
+    category: { type: String, default: '' },
+    order: { type: Number, default: 0 }
   },
-  
+
   timeSpentSeconds: { type: Number, required: true, default: 0 },
   completed: { type: Boolean, default: false },
   timestamp: { type: Date, default: Date.now }
 });
+
+const EngagementLogSchema = new mongoose.Schema(
+  {
+    studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+    resourceId: { type: String, required: true },
+    resourceType: { type: String, default: 'Visual' },
+    seconds: { type: Number, required: true, min: 0 },
+    timestamp: { type: Date, default: Date.now }
+  },
+  { timestamps: true }
+);
 
 const QuizSchema = new mongoose.Schema(
   {
@@ -331,6 +353,7 @@ module.exports = {
   PasswordReset: mongoose.model('PasswordReset', PasswordResetSchema),
   About: mongoose.model('About', AboutSchema),
   Interaction: mongoose.model('Interaction', InteractionSchema), // --- ADDED ---
+  EngagementLog: mongoose.model('EngagementLog', EngagementLogSchema),
   Quiz: mongoose.model('Quiz', QuizSchema),
   ModelLog: mongoose.model('ModelLog', ModelLogSchema)
 };
